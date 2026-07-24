@@ -1,0 +1,46 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# ---- 密钥 ----
+.env
+*.key
+
+# ---- 数据 / 权重 / 训练产物（体积大，不入库）----
+data/
+datasets/
+checkpoints/
+ckpt/
+models/
+weights/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.gguf
+*.parquet
+
+# ---- 训练日志 ----
+wandb/
+runs/
+logs/
+outputs/
+*.tfevents.*
+
+# ---- 系统与编辑器 ----
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+
+# ---- Obsidian 工作区状态 ----
+.obsidian/workspace*
+.trash/
