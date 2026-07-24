@@ -15,11 +15,13 @@
 - **元认知（KAL）**：内部探针检测知识空白（SAPLMA 证据），模型主动"回想"而非盲目猜测。
 - **TAIS Obsidian 1.5B 模型**：28 层 = 7 × {3 GDN-MemBlock + 1 CSA-AttnBlock}（Gated DeltaNet : 全注意力 = 3:1），hidden 2048，词表 129280 tied embedding，原生 1M 上下文；KAL/HRL/知识块注入点为 checkpoint 内生部件（非外挂服务）。
 
-模型谱系：TAIS Obsidian 1B / 1.5B /（远期）4B-A1B。目标硬件：RTX PRO 4000 Blackwell SFF（24GB）。
+模型谱系：TAIS Obsidian 1B / 1.5B /（远期）4B-A1B。本机硬件（2026-07-24 到位）：**RTX PRO 4000 Blackwell SFF（24GB，sm_120，70W）** + RTX 4070 8GB 副卡（显示/杂务，不用于训练），驱动 596.36（CUDA 13.2）——PyTorch 须用 **cu128+** wheel（cu126 无 sm_120 内核）。
 
 ## 2. 仓库当前状态（2026-07-24 更新）
 
 **代码已落地**：设计文档（`docs/`）+ 自研训练/推理框架首个可运行版本（D-0 级 0.1B 先导实验，纯 PyTorch，无 triton，Windows 原生可跑）。
+
+**本机工作区状态**：全新 clone——`.venv` / `data/` / `checkpoints/` / `runs/` 尚未在本机创建；环境重建、数据准备、0.1B pilot 重启按《从零构建TAIS-Obsidian_总体实施计划.md》§6.6（S0→S1→S2）逐步执行。旧 4060 笔记本的 D-0 基线不迁移。
 
 ### 2.1 代码结构
 
@@ -36,7 +38,7 @@
 
 ### 2.2 常用命令
 
-先 `source .venv/Scripts/activate`（Git Bash；venv 由 uv 创建，Python 3.12 + torch 2.13.0+cu126）。
+先 `source .venv/Scripts/activate`（Git Bash；venv 由 uv 创建，Python 3.12）。**工作站（Blackwell sm_120）装 torch 用 `uv pip install torch --index-url https://download.pytorch.org/whl/cu128`**；cu126 wheel 不含 sm_120 内核，不可用。
 
 - 环境自检：`python scripts/check_env.py`
 - 数据准备：`python scripts/prepare_data.py`
@@ -45,7 +47,7 @@
 - 训练：`python -m tais_obsidian.train --config configs/pilot_0p1b.json --run_name <name>`（续训加 `--resume checkpoints/<run>/latest.pt`）
 - 推理：`python -m tais_obsidian.generate --ckpt checkpoints/<run>/final --prompt "..."`
 
-本机（4060 Laptop 8GB）实测基线：训练 ~1.8k tok/s（micro 16×accum 4×seq 1024，峰值显存 7.0GB），生成 ~43 tok/s。因此本文件保留完整的命令说明；仍**不要臆造**未列出的命令。所有实现工作应严格遵循 `docs/` 中的路线图（见 §4）与《从零构建TAIS-Obsidian_总体实施计划.md》的阶段检查点。
+工作站吞吐基线待 S2 实测（历史参考：4060 Laptop 8GB 训练 ~1.8k tok/s、生成 ~43 tok/s）。**不要臆造**未列出的命令。所有实现工作应严格遵循 `docs/` 中的路线图（见 §4）与《从零构建TAIS-Obsidian_总体实施计划.md》的阶段检查点。
 
 ## 3. 文档清单与内容地图
 
@@ -53,10 +55,10 @@
 
 | 文件 | 版本 | 内容 |
 |---|---|---|
-| `docs/动态知识块记忆系统_设计文档.md` | v0.3 | DKB-MS 核心设计（What & Why）：体系结构类比、Block Spec v0.1（字段规范、生命周期状态机）、存储层级 L0–L3、苏醒序列、路由与学习、空白检测三通道、写通道 W0–W4 与页保护位、接口 ABI v0.1、人格块、可行性证据汇总（§11）、开放问题（§12） |
-| `docs/TAIS_Obsidian_细致框架设计文档.md` | v0.5/v0.6 | TAIS Obsidian 1.5B 模型设计：模型配置表（§2）、原生 1M 训练方案（§3）、数据集计划（§4，基于 OLMo 3 / Dolma 3 系列）、BF16 训练配方（§5）、KAL/HRL/视觉空间区模块（§6）、T0–T5 训练方案（§7）、原生集成收益分析（§8）、与市面记忆框架对比（§10） |
-| `docs/DKB-MS_实施规划与路线图.md` | v0.1 | 实施路线图（How & When）：需求追溯矩阵 R1–R10、Phase 0–4 分阶段计划及各阶段**退出标准**、资源估算、风险登记册、立即行动清单（§8） |
-| `docs/从零构建TAIS-Obsidian_总体实施计划.md` | v0.1 | 从零构建/训练/推理的总实施计划（How，工程向）：本机环境现状与检查清单（§1–2）、阶段 A–H（教材复现→环境→数据/tokenizer→基线预训练→混合架构对拍→1.5B 正式训练 T0–T5→HF/vLLM/GGUF 推理→DKB-MS 集成）、显存/吞吐/超参公式（§6、§12）、风险登记册（§11）。素材来自 2026-07-24 联网调研 |
+| `docs/动态知识块记忆系统_设计文档.md` | v0.4 | DKB-MS 核心设计（What & Why）：体系结构类比、Block Spec v0.1（字段规范、生命周期状态机）、存储层级 L0–L3、苏醒序列、路由与学习、空白检测三通道、写通道 W0–W4 与页保护位（v0.4 修订注记：EXP-PERSONA 沙箱例外）、接口 ABI v0.1、人格块、可行性证据汇总（§11）、开放问题（§12） |
+| `docs/TAIS_Obsidian_细致框架设计文档.md` | v0.9 | TAIS Obsidian 1.5B 模型设计：模型配置表（§2）、原生 1M 训练方案（§3）、数据集计划（§4，基于 OLMo 3 / Dolma 3 系列）、BF16 训练配方（§5）、KAL/HRL/视觉空间区模块（§6）、T0–T5 训练方案（§7）、原生集成收益分析（§8）、与市面记忆框架对比（§10）、CSA 原生块通路与 HRL 侧信道头簇（§11，v0.7）、动态参数增长与 mHC 全层感知互联 PM-stream（§12，v0.8）、Reasoning-native 设计与规模化路径（§13，v0.9） |
+| `docs/DKB-MS_实施规划与路线图.md` | v0.2 | 实施路线图（How & When）：需求追溯矩阵 R1–R10、Phase 0–4 分阶段计划及各阶段**退出标准**、资源估算、风险登记册、立即行动清单（§8）；v0.2 挂接 EXP-PERSONA（Phase 4） |
+| `docs/从零构建TAIS-Obsidian_总体实施计划.md` | v0.3 | 从零构建/训练/推理的总实施计划（How，工程向）：工作站环境现状与检查清单（§1–2）、阶段 A–H、§6.6 D-0 逐步执行方案（S0 环境→S1 数据→S2 pilot+孪生）、§7.5 阶段 E+ 原生部件 0.1B 原型序列、§8A EXP-PERSONA 极其实验（人格块可读写 + KAL 道德约束块）、显存/吞吐/超参公式（§6、§12）、风险登记册（§11） |
 | `docs/TAIS_Obsidian_架构详图.png` | v0.4.1 | Carbon 设计语言架构详图：主干、KAL、HRL、知识块库、DKB-Runtime、记忆层级、睡眠巩固器、T0–T5 流水线、苏醒序列 |
 
 注意：文档中引用的另一份配套文档《自我学习LLM框架构想_HippoK》(v0.2) **不在本仓库中**；旧命名 HippoK 已废止，统一为 TAIS Obsidian（tais-obsidian）。
@@ -70,7 +72,7 @@ Phase 0（基础设施，第一步）规划的技术选型：
 - **存储**：SQLite（页表/元数据）+ 向量库（route_key 检索）+ 文件存储（块载荷）；
 - **实验底座模型**：主力 Qwen3.5-9B，管线调试用 Qwen3.5-4B，对照 Qwen3-8B（全注意力，用于分离混合架构效应）；冻结 vision tower，纯文本实验；
 - **训练**：BF16 mixed（bf16 计算 + FP32 主权重/优化器/梯度累积，禁止纯 bf16）、8-bit AdamW、grad clip 1.0、QK-Norm；OLMo 3 数据课程（Dolma 3 Mix / Dolmino / Longmino、Dolci 后训练套件）；
-- **硬件**：开发 1×24GB（4090 级），主力实验 1×48–80GB；1M 长上下文阶段需云端短租多卡。
+- **硬件**：开发机 = RTX PRO 4000 Blackwell SFF（24GB，sm_120）已到位（2026-07-24），9B 底座 bf16 推理（~19GB）与 1.5B 机制短训本机解锁；正式 1.5B 预训练走多卡/云端；1M 长上下文阶段需云端短租多卡。
 
 **GDN 层关键约束**（写代码时必须遵守）：GDN 层无 KV cache，KV prefix 注入只适用于占 1/4 的全注意力（CSA）层；LoRA 注入各层通用。知识块的"载体适用性"必须按层类型标注。
 
@@ -96,7 +98,7 @@ Phase 0（基础设施，第一步）规划的技术选型：
 ## 7. 安全与设计红线（来自设计文档，实现时必须遵守）
 
 - **读写不对称**：运行时仅允许 W0–W2 写原语（日志追加、steering vector、KV prefix 追加），绝不触碰正在运行的权重；W3+（LoRA 梯度更新、合并入主干）仅离线执行且需审计；
-- **页保护位**：人格块运行时只读，元数据块写入需验证门，知识块可写，draft 日志区隔离；
+- **页保护位**：人格块运行时只读，元数据块写入需验证门，知识块可写，draft 日志区隔离；**（沙箱例外：EXP-PERSONA 极其实验——KAL 道德约束块 MCB 作为强制闸门时分级开放人格写通道，规范见总体实施计划 §8A；实验外红线维持原状，MCB 自身永不可写）**
 - **防记忆投毒**：知识块带防篡改签名；draft→固化之间必须有验证门（校验集回归测试）；源代码形态是最终审计与回滚依据，编译产物可随时废弃重建；
 - **冲突不静默覆盖**：版本号 + 时间戳 + 置信度三路仲裁，冲突未决时保留双方并标注分歧；
 - **诚实降级**：缺页/超时时代理应明确声明"该部分记忆暂不可用"，而非用空白知识作答；苏醒序列阶段 2 完成后须显式声明"记忆部分加载"状态。
