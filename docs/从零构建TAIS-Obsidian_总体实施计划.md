@@ -1,6 +1,6 @@
 # 从零构建 TAIS Obsidian：总体实施计划
 
-> **版本**：v0.1（2026-07-24）
+> **版本**：v0.2（2026-07-24。v0.2 新增：§6.1 D-0 级 0.1B 先导实验——本机首个端到端自有框架验证，含 Windows 纯 PyTorch GDN 回退方案；§3 环境搭建已于同日启动）
 > **定位**：本文档回答"如何从零构建、训练并推理我们自己的框架"这一总问题，是连接三部设计文档（What & Why）与落地代码（How）的**总实施计划**。阶段 G/H 与《DKB-MS_实施规划与路线图.md》v0.1 的 Phase 0–4 对接，不重复展开。
 > **素材来源**：本文档的事实性内容（显存公式、超参、工具能力边界）来自 2026-07-24 的联网调研，来源在文中以 arXiv 编号或 URL 标注；"已有研究证据"与"本项目独创设想"严格区分，独创设想以【设想】标注。
 
@@ -185,8 +185,11 @@ flowchart LR
 
 | 级别 | 配置 | 用途 | 本机可行性 |
 |---|---|---|---|
+| D-0 | **~0.1B 先导（当前执行目标）**：12 层 = 3 × {3 GDN + 1 CSA} / hidden 768 / 自训 32768 BPE / tied | 首个端到端自有框架验证：混合架构 + 训练 + 推理全链路 | ✅ 全量 AdamW（模型状态 ~1.6GB） |
 | D-1 | ~124M：12 层 / hidden 768 / 12 头，GPT-2 式 | 管线验证 + 速度基线 | ✅ 全量 AdamW（模型状态 ~2GB） |
 | D-2 | ~0.5B：24 层 / hidden 1024–1536，现代件（RMSNorm、SwiGLU、RoPE θ=5e5、QK-Norm、tied embedding、无 bias） | 验证现代配方 + 作为阶段 E 混合架构的同规模对照 | ⚠️ 需 8-bit AdamW（~5GB）+ gradient checkpointing + 小 micro batch |
+
+**D-0 补充说明（v0.2）**：0.1B 先导直接采用混合架构（12 层 = 3 × {3 GDN + 1 CSA}），而非先训纯注意力——0.1B 尺度上对照实验很便宜，一步到位更符合"搭建自有框架"的目标；同时训一个同配置纯注意力孪生版作对照（阶段 E 对拍的预演）。**词表不能用 129280**：hidden 768 时 tied embedding = 99M，会吃掉全部参数预算，故自训 32768 BPE（顺带验证阶段 C 的 tokenizer 管线；词表取 128 倍数以利 GPU 对齐）。**Windows 回退方案**：fla 的 GDN kernel 依赖 Triton（无官方 Windows 支持），D-0 用纯 PyTorch 实现的 chunked gated delta rule（与 fla naive 参考实现逐点误差 <1e-4 对拍），0.1B / seq 1024 尺度吞吐损失可接受；正式规模迁移到 WSL2/Linux + fla Triton kernel（阶段 E/F）。
 
 现代件组合均为已验证证据：RMSNorm/SwiGLU/RoPE/QK-Norm 经 OLMo 2（arXiv:2501.00656）与 SmolLM3 实证；FFN 内维 ≈ (8/3)·d_model 取整到 128 倍数；embedding 层不加 weight decay（SmolLM3 借自 OLMo 2，改善训练动态）。
 
@@ -352,9 +355,9 @@ llama.cpp 已有 `GGML_OP_GATED_DELTA_NET` 算子与 Qwen3-Next converter；我�
 - 推理：vLLM 文档（Adding a New Model / LoRA / APC / Sleep Mode）；PyTorch 博客 "Hybrid Models as First-Class Citizens in vLLM"（2025-11）。
 - 评估：EleutherAI lm-evaluation-harness；RULER（长上下文）。
 
-### 12.3 立即行动清单（本文档视角，与路线图 §8 互补）
+### 12.3 立即行动清单（2026-07-24 更新）
 
-1. 【本周】§3 环境搭建 + 检查点全过（含过拟合冒烟测试）。
-2. 【本周起】阶段 A 教材路径推进（每天可交付一个章节的代码笔记）。
-3. 【环境就绪后】阶段 C 数据管线（FineWeb-Edu 样本起步）+ tokenizer 压缩率实验。
+1. ~~【本周】§3 环境搭建 + 检查点全过~~ ✅ 已完成（torch 2.13.0+cu126；check_env 全绿；过拟合冒烟 hybrid/attn_only 双变体 300 步 loss→0.0004）。
+2. **D-0 0.1B 先导已提前启动**（先于阶段 A，因环境就绪）：自有框架端到端已验证——混合架构 12 层 = 3×{3 GDN + 1 CSA}、108M 参数、GDN naive/chunked 对拍 7.75e-7、自训 32768 BPE、120M tokens（FineWeb-Edu sample-10BT）、生成 42.6 tok/s。2000 步正式 pilot 训练进行中（本机 ~20h，~1.8k tok/s），完成后训 attn_only 孪生对照，结论回填 §6.1。
+3. 【持续】阶段 A 教材路径推进——与 D-0 代码互证（教材的纯注意力 GPT ↔ 本框架 attention.py）。
 4. 【待硬件】底座模型实验（路线图 Phase 0–1）与 §9.2 vLLM 原生实现，需 24GB 卡或云端预算到位后启动。

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tais-obsidian"
+version = "0.1.0"
+description = "TAIS Obsidian：面向持续学习 LLM 的权重虚拟内存 —— 自研混合架构（GDN:CSA = 3:1）训练与推理框架"
+requires-python = ">=3.11"
+dependencies = [
+    "torch",
+    "transformers",
+    "datasets",
+    "tokenizers",
+    "numpy",
+    "tensorboard",
+    "tiktoken",
+    "bitsandbytes",
+    "safetensors",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tais_obsidian"]

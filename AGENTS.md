@@ -17,15 +17,35 @@
 
 模型谱系：TAIS Obsidian 1B / 1.5B /（远期）4B-A1B。目标硬件：RTX PRO 4000 Blackwell SFF（24GB）。
 
-## 2. 仓库当前状态（重要）
+## 2. 仓库当前状态（2026-07-24 更新）
 
-**本仓库目前只包含设计文档，没有任何代码。** 具体而言：
+**代码已落地**：设计文档（`docs/`）+ 自研训练/推理框架首个可运行版本（D-0 级 0.1B 先导实验，纯 PyTorch，无 triton，Windows 原生可跑）。
 
-- 没有 `pyproject.toml`、`package.json`、`Cargo.toml` 等任何配置文件或依赖清单；
-- 没有源代码、测试、CI 配置；
-- 没有构建、测试、部署命令可运行——不要臆造这些命令。
+### 2.1 代码结构
 
-因此本文件不设"构建与测试命令"一节。所有实现工作应从零开始，并严格遵循 `docs/` 中的路线图（见 §4）。当未来引入代码后，请更新本文件，补充实际的构建/测试命令与代码结构说明。
+- `src/tais_obsidian/`：框架包（`uv pip install -e .` 后可 import）
+  - `config.py`：ModelConfig dataclass + JSON 读写
+  - `model/`：`attention.py`（CSA：RoPE+GQA+QK-Norm+SDPA，KV cache）、`gdn.py`（GDN：naive_recurrent + chunked 双路径，纯 PyTorch）、`model.py`（`TaisObsidianForCausalLM`，tied embedding，自研 `save_pretrained`/`from_pretrained`，不依赖 transformers 建模）
+  - `data/memmap.py`：uint16 bin shard 读写与 batch 采样；`tokenizer_io.py`：tokenizer 封装
+  - `train.py`：训练循环（bf16 autocast + fp32 参数、AdamW 分组、WSD 调度、grad clip 1.0、checkpoint/resume、tensorboard）
+  - `generate.py`：cache 增量生成（temperature/top-k）
+- `configs/pilot_0p1b.json`：0.1B pilot 配置（12 层 = 3×{3 GDN + 1 CSA}，hidden 768，vocab 32768）
+- `scripts/`：`check_env.py`（环境自检）、`prepare_data.py`（FineWeb-Edu → 训 32k BPE → 120M tokens shards）、`smoke_overfit.py`（双变体过拟合冒烟）
+- `tests/`：`test_gdn.py`（GDN 两路径对拍 <1e-4）、`test_cache.py`（增量 vs 整段一致性、save/load 往返）
+- 不入库：`data/`（tokenizer + shards）、`checkpoints/`、`runs/`、`logs/`
+
+### 2.2 常用命令
+
+先 `source .venv/Scripts/activate`（Git Bash；venv 由 uv 创建，Python 3.12 + torch 2.13.0+cu126）。
+
+- 环境自检：`python scripts/check_env.py`
+- 数据准备：`python scripts/prepare_data.py`
+- 冒烟测试：`python scripts/smoke_overfit.py`
+- 单元测试：`python -m pytest tests/`（未装 pytest 时直接 `python tests/test_gdn.py`）
+- 训练：`python -m tais_obsidian.train --config configs/pilot_0p1b.json --run_name <name>`（续训加 `--resume checkpoints/<run>/latest.pt`）
+- 推理：`python -m tais_obsidian.generate --ckpt checkpoints/<run>/final --prompt "..."`
+
+本机（4060 Laptop 8GB）实测基线：训练 ~1.8k tok/s（micro 16×accum 4×seq 1024，峰值显存 7.0GB），生成 ~43 tok/s。因此本文件保留完整的命令说明；仍**不要臆造**未列出的命令。所有实现工作应严格遵循 `docs/` 中的路线图（见 §4）与《从零构建TAIS-Obsidian_总体实施计划.md》的阶段检查点。
 
 ## 3. 文档清单与内容地图
 
