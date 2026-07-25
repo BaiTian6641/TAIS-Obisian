@@ -13,13 +13,13 @@ venv/
 .env
 *.key
 
-# ---- 数据 / 权重 / 训练产物（体积大，不入库）----
-data/
-datasets/
-checkpoints/
-ckpt/
-models/
-weights/
+# ---- 数据 / 权重 / 训练产物（体积大，不入库；仅仓库根目录，避免误伤 src/ 内同名包目录）----
+/data/
+/datasets/
+/checkpoints/
+/ckpt/
+/models/
+/weights/
 *.safetensors
 *.bin
 *.pt
@@ -28,10 +28,10 @@ weights/
 *.parquet
 
 # ---- 训练日志 ----
-wandb/
-runs/
-logs/
-outputs/
+/wandb/
+/runs/
+/logs/
+/outputs/
 *.tfevents.*
 
 # ---- 系统与编辑器 ----

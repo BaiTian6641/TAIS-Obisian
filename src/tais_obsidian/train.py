@@ -82,9 +82,12 @@ def build_optimizer(model: torch.nn.Module, cfg: dict) -> torch.optim.AdamW:
 
 
 def chunked_ce(logits: torch.Tensor, targets: torch.Tensor, chunk: int = 4096) -> torch.Tensor:
-    """分块 fp32 cross entropy，避免一次性 fp32 logits 副本撑爆显存。"""
-    flat = logits.view(-1, logits.size(-1))
-    tgt = targets.view(-1)
+    """分块 fp32 cross entropy，避免一次性 fp32 logits 副本撑爆显存。
+
+    用 reshape 而非 view：允许非连续输入（如 cache/切片来源的张量）。
+    """
+    flat = logits.reshape(-1, logits.size(-1))
+    tgt = targets.reshape(-1)
     total = None
     for i in range(0, flat.shape[0], chunk):
         part = F.cross_entropy(flat[i : i + chunk].float(), tgt[i : i + chunk], reduction="sum")
@@ -149,7 +152,12 @@ def main() -> None:
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
 
-    model_cfg = ModelConfig(attn_only=cfg["attn_only"])
+    # pm_stream/pm_constrain 缺省 = 1/True（单流基线零改动）；PM 消融在 config JSON 中加 "pm_stream": 5
+    model_cfg = ModelConfig(
+        attn_only=cfg["attn_only"],
+        pm_stream=cfg.get("pm_stream", 1),
+        pm_constrain=cfg.get("pm_constrain", True),
+    )
     model = TaisObsidianForCausalLM(model_cfg).to(device)
     opt = build_optimizer(model, cfg)
     train_shards = Shards(cfg["data_dir"], "train")

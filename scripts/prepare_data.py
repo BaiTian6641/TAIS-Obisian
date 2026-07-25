@@ -41,7 +41,11 @@ def probe(url: str, timeout: float = 5.0) -> bool:
 
 
 def pick_endpoint() -> None:
-    """HF 不可达时切镜像（须在 import datasets 之前设置）。"""
+    """HF 不可达时切镜像（须在 import datasets 之前设置）；预置 HF_ENDPOINT 优先。"""
+    preset = os.environ.get("HF_ENDPOINT")
+    if preset:
+        print(f"[endpoint] 使用预置 HF_ENDPOINT={preset}")
+        return
     if probe("https://huggingface.co"):
         print("[endpoint] huggingface.co 直连可达")
     else:
@@ -183,11 +187,18 @@ def main() -> None:
     corpus: list[str] = []
     corpus_bytes = 0
     tok_bytes_target = int(args.tok_corpus_mb * 1024 * 1024)
-    for text in stream:
-        corpus.append(text)
-        corpus_bytes += len(text.encode("utf-8"))
-        if corpus_bytes >= tok_bytes_target:
-            break
+    try:
+        for text in stream:
+            corpus.append(text)
+            corpus_bytes += len(text.encode("utf-8"))
+            if corpus_bytes >= tok_bytes_target:
+                break
+    except Exception as e:  # noqa: BLE001
+        raise SystemExit(
+            f"[corpus] 语料流中段失败: {e!r}\n"
+            "提示：直连不稳定时请以环境变量 HF_ENDPOINT=https://hf-mirror.com 重跑本脚本"
+            "（endpoint 常量在 import 时固定，进程内切换不可靠，必须重跑）"
+        ) from e
     print(f"[corpus] tokenizer 训练语料: {len(corpus)} 篇 / {corpus_bytes/1024**2:.0f} MB，耗时 {time.time()-t0:.0f}s")
 
     if not tok_path.exists():
@@ -252,6 +263,12 @@ def main() -> None:
         except StopIteration:
             print("[corpus] 语料流耗尽，提前结束")
             break
+        except Exception as e:  # noqa: BLE001
+            raise SystemExit(
+                f"[corpus] 阶段 2 语料流中段失败: {e!r}\n"
+                "提示：直连不稳定时请以环境变量 HF_ENDPOINT=https://hf-mirror.com 重跑本脚本"
+                "（endpoint 常量在 import 时固定，进程内切换不可靠，必须重跑）"
+            ) from e
         batch_docs.append(text)
         if len(batch_docs) >= 128:
             drain(batch_docs)

@@ -25,44 +25,49 @@ print(f"torch {torch.__version__} / wheel CUDA {torch.version.cuda}")
 check("CUDA 可用", torch.cuda.is_available())
 
 if torch.cuda.is_available():
-    name = torch.cuda.get_device_name(0)
-    cap = torch.cuda.get_device_capability(0)
-    vram_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
-    print(f"设备: {name} / compute capability {cap} / 显存 {vram_gb:.1f} GB")
-
-    want_sm = f"sm_{cap[0]}{cap[1]}"
+    n_dev = torch.cuda.device_count()
+    print(f"可见 GPU 数: {n_dev}（多卡机器请用 CUDA_VISIBLE_DEVICES 选定计算卡）")
     arch_list = torch.cuda.get_arch_list()
+
     # 关键检查：wheel 里是否有能在本机跑的 kernel。
     # CUDA 二进制兼容性：同一主版本内，低 minor 的 SASS 可在高 minor 设备上运行
     # （如 sm_86 的 cubin 可在 sm_89 Ada 上运行）；compute_XX PTX 可由驱动 JIT。
-    def _compatible(arch: str) -> bool:
+    def _compatible(arch: str, cap: tuple[int, int]) -> bool:
         if arch.startswith("sm_"):
-            try:
-                major, minor = int(arch[3]), int(arch[4:])
-            except (IndexError, ValueError):
+            digits = arch[3:]
+            if not digits.isdigit() or len(digits) < 2:
                 return False
+            # sm_89 → (8,9)；sm_120 → (12,0)——major 可为两位，末位才是 minor
+            major, minor = int(digits[:-1]), int(digits[-1])
             return major == cap[0] and minor <= cap[1]
         if arch.startswith("compute_"):
             return True  # PTX 可 JIT
         return False
 
-    compat = [a for a in arch_list if _compatible(a)]
-    check("arch_list 含兼容 kernel", len(compat) > 0,
-          f"want {want_sm} 或同主版本低 minor, got {arch_list}, 可用 {compat}")
+    for idx in range(n_dev):
+        name = torch.cuda.get_device_name(idx)
+        cap = torch.cuda.get_device_capability(idx)
+        vram_gb = torch.cuda.get_device_properties(idx).total_memory / 1024**3
+        print(f"--- 设备 {idx}: {name} / compute capability {cap} / 显存 {vram_gb:.1f} GB")
 
-    check("bf16 支持", torch.cuda.is_bf16_supported())
+        want_sm = f"sm_{cap[0]}{cap[1]}"
+        compat = [a for a in arch_list if _compatible(a, cap)]
+        check(f"设备{idx} arch_list 含兼容 kernel", len(compat) > 0,
+              f"want {want_sm} 或同主版本低 minor, got {arch_list}, 可用 {compat}")
 
-    # 实际跑一次 bf16 matmul，验证 tensor core 路径
-    try:
-        a = torch.randn(4096, 4096, device="cuda", dtype=torch.bfloat16)
-        torch.cuda.synchronize()
-        s = (a @ a).sum().item()
-        check("bf16 matmul 实测", s != 0 and s == s)  # 非 0 且非 NaN
-    except Exception as e:  # noqa: BLE001
-        check("bf16 matmul 实测", False, repr(e))
+        check(f"设备{idx} bf16 支持", torch.cuda.is_bf16_supported())
 
-    free_gb, total_gb = [x / 1024**3 for x in torch.cuda.mem_get_info()]
-    print(f"空闲显存: {free_gb:.1f} / {total_gb:.1f} GB")
+        # 实际跑一次 bf16 matmul，验证 tensor core 路径
+        try:
+            a = torch.randn(4096, 4096, device=f"cuda:{idx}", dtype=torch.bfloat16)
+            torch.cuda.synchronize(idx)
+            s = (a @ a).sum().item()
+            check(f"设备{idx} bf16 matmul 实测", s != 0 and s == s)  # 非 0 且非 NaN
+        except Exception as e:  # noqa: BLE001
+            check(f"设备{idx} bf16 matmul 实测", False, repr(e))
+
+        free_gb, total_gb = [x / 1024**3 for x in torch.cuda.mem_get_info(idx)]
+        print(f"设备{idx} 空闲显存: {free_gb:.1f} / {total_gb:.1f} GB")
 
 if failures:
     print(f"\n{len(failures)} 项检查失败: {failures}")

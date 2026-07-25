@@ -27,18 +27,18 @@
 
 - `src/tais_obsidian/`：框架包（`uv pip install -e .` 后可 import）
   - `config.py`：ModelConfig dataclass + JSON 读写
-  - `model/`：`attention.py`（CSA：RoPE+GQA+QK-Norm+SDPA，KV cache）、`gdn.py`（GDN：naive_recurrent + chunked 双路径，纯 PyTorch）、`model.py`（`TaisObsidianForCausalLM`，tied embedding，自研 `save_pretrained`/`from_pretrained`，不依赖 transformers 建模）
+  - `model/`：`attention.py`（CSA：RoPE+GQA+QK-Norm+SDPA，KV cache）、`gdn.py`（GDN：naive_recurrent + chunked 双路径，纯 PyTorch）、`model.py`（`TaisObsidianForCausalLM`，tied embedding，自研 `save_pretrained`/`from_pretrained`，不依赖 transformers 建模；`forward(capture_layers=...)` hidden-state 捕获挂点）、`blockpath.py`（CSA 块通路原型：stride-4 压缩器 + 块 KV 收割/注入 + namespace fail-closed，设计 §11.1）、`pmstream.py`（E+-5 PM-stream：mHC 多流残差 arXiv:2512.24880，`ModelConfig.pm_stream=5` 启用，默认 1 单流零改动；恒等初始化与单流基线 <1e-6）
   - `data/memmap.py`：uint16 bin shard 读写与 batch 采样；`tokenizer_io.py`：tokenizer 封装
-  - `train.py`：训练循环（bf16 autocast + fp32 参数、AdamW 分组、WSD 调度、grad clip 1.0、checkpoint/resume、tensorboard）
+  - `train.py`：训练循环（bf16 autocast + fp32 参数、AdamW 分组、WSD 调度、grad clip 1.0、checkpoint/resume、tensorboard；config JSON 加 `"pm_stream": 5` 可开 PM 消融）
   - `generate.py`：cache 增量生成（temperature/top-k）
-- `configs/pilot_0p1b.json`：0.1B pilot 配置（12 层 = 3×{3 GDN + 1 CSA}，hidden 768，vocab 32768）
-- `scripts/`：`check_env.py`（环境自检）、`prepare_data.py`（FineWeb-Edu → 训 32k BPE → 120M tokens shards）、`smoke_overfit.py`（双变体过拟合冒烟）
-- `tests/`：`test_gdn.py`（GDN 两路径对拍 <1e-4）、`test_cache.py`（增量 vs 整段一致性、save/load 往返）
+- `configs/pilot_0p1b.json`：0.1B pilot 配置（12 层 = 3×{3 GDN + 1 CSA}，hidden 768，vocab 32768）；`configs/pilot_0p1b_pm.json`：PM-stream 消融变体（同基线 + `pm_stream: 5`）
+- `scripts/`：`check_env.py`（环境自检）、`prepare_data.py`（FineWeb-Edu → 训 32k BPE → 120M tokens shards）、`smoke_overfit.py`（双变体过拟合冒烟）、`smoke_overfit_pm.py`（PM-stream 变体过拟合冒烟）
+- `tests/`：`test_gdn.py`（GDN 两路径对拍 <1e-4）、`test_cache.py`（增量 vs 整段一致性、save/load 往返）、`test_capture.py`（hidden-state 捕获挂点）、`test_blockpath.py`（CSA 块通路机制）、`test_pmstream.py`（PM-stream：恒等初始化/稳定性/反向/save-load/增量/捕获）——均 pytest 可收集
 - 不入库：`data/`（tokenizer + shards）、`checkpoints/`、`runs/`、`logs/`
 
 ### 2.2 常用命令
 
-先 `source .venv/Scripts/activate`（Git Bash；venv 由 uv 创建，Python 3.12）。**工作站（Blackwell sm_120）装 torch 用 `uv pip install torch --index-url https://download.pytorch.org/whl/cu128`**；cu126 wheel 不含 sm_120 内核，不可用。
+先 `source .venv/Scripts/activate`（Git Bash；venv 由 uv 创建，Python 3.12）。**工作站（Blackwell sm_120）装 torch 用 `uv pip install torch --index-url https://download.pytorch.org/whl/cu128`**；cu126 wheel 不含 sm_120 内核，不可用。**双卡注意：torch 设备序 ≠ nvidia-smi 序——cuda:0 = RTX 4070（8GB 副卡），cuda:1 = RTX PRO 4000（24GB 计算卡）；所有训练/测试/生成命令必须前缀 `CUDA_VISIBLE_DEVICES=1`**（单卡视图下 PRO 4000 即 cuda:0）。HF 直连不稳定时数据脚本前缀 `HF_ENDPOINT=https://hf-mirror.com`。
 
 - 环境自检：`python scripts/check_env.py`
 - 数据准备：`python scripts/prepare_data.py`
@@ -60,6 +60,7 @@
 | `docs/DKB-MS_实施规划与路线图.md` | v0.2 | 实施路线图（How & When）：需求追溯矩阵 R1–R10、Phase 0–4 分阶段计划及各阶段**退出标准**、资源估算、风险登记册、立即行动清单（§8）；v0.2 挂接 EXP-PERSONA（Phase 4） |
 | `docs/从零构建TAIS-Obsidian_总体实施计划.md` | v0.3 | 从零构建/训练/推理的总实施计划（How，工程向）：工作站环境现状与检查清单（§1–2）、阶段 A–H、§6.6 D-0 逐步执行方案（S0 环境→S1 数据→S2 pilot+孪生）、§7.5 阶段 E+ 原生部件 0.1B 原型序列、§8A EXP-PERSONA 极其实验（人格块可读写 + KAL 道德约束块）、显存/吞吐/超参公式（§6、§12）、风险登记册（§11） |
 | `docs/TAIS_Obsidian_架构详图.png` | v0.4.1 | Carbon 设计语言架构详图：主干、KAL、HRL、知识块库、DKB-Runtime、记忆层级、睡眠巩固器、T0–T5 流水线、苏醒序列 |
+| `docs/D0_0p1B先导实验报告.md` | 2026-07-24 | D-0 0.1B 先导实验报告（工作站 S2）：hybrid vs attn_only 对照（val 3.768 vs 3.818，−0.050 nats）、训练/生成吞吐与显存基线、micro batch 标定、S2 退出判定通过 |
 
 注意：文档中引用的另一份配套文档《自我学习LLM框架构想_HippoK》(v0.2) **不在本仓库中**；旧命名 HippoK 已废止，统一为 TAIS Obsidian（tais-obsidian）。
 

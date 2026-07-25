@@ -72,5 +72,10 @@ def main() -> None:
     print("test_cache 全部通过。")
 
 
+def test_cache_consistency_and_saveload() -> None:
+    """pytest 收集入口：与 main() 等价。"""
+    main()
+
+
 if __name__ == "__main__":
     main()

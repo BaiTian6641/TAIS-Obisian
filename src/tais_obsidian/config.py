@@ -36,6 +36,12 @@ class ModelConfig:
     grad_checkpoint: bool = True
     # 构建时是否断言参数量落在 0.1B 区间（tiny 冒烟配置关闭）
     check_0p1b_params: bool = True
+    # PM-stream（mHC 多流残差，arXiv:2512.24880；实现见 model/pmstream.py）：
+    # 1 = 现状单流残差（默认，数值路径与既有版本逐行一致）；5 = 4 内容流 + 1 感知-记忆流
+    # （设计文档 §12.2/§13.4；>1 的其它整数值同理，末位流为 PM-stream）
+    pm_stream: int = 1
+    # Sinkhorn-Knopp 双随机约束开关：True = mHC 原文（默认）；False = 无约束 HC 消融对照
+    pm_constrain: bool = True
 
     @property
     def layer_types(self) -> list[str]:

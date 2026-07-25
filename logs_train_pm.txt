@@ -1,0 +1,67 @@
+[cfg] {"run_name": "pilot_0p1b_pm", "seed": 42, "out_dir": "checkpoints/pilot_0p1b_pm", "data_dir": "data/shards", "seq_len": 1024, "max_steps": 2000, "micro_batch": 16, "grad_accum": 4, "lr": 0.001, "warmup": 200, "decay_frac": 0.15, "weight_decay": 0.1, "grad_clip": 1.0, "val_every": 250, "val_batches": 20, "log_every": 20, "ckpt_every": 500, "attn_only": false, "pm_stream": 5}
+[model] 参数量 111.21M（tied embedding；层型 GGGAGGGAGGGA）
+[opt] AdamW fused=True, decay 86.0M, no_decay 25.2M
+[data] train 118.0M tokens, val 2.0M
+[train] global batch 64k tokens/step, micro 16×accum 4×seq 1024
+step     1 | loss 10.5489 (ema 10.5489) | lr 5.00e-06 | gnorm 4.60 | 2.9k tok/s | mem 10.78GB
+step    20 | loss 8.8988 (ema 10.2397) | lr 1.00e-04 | gnorm 1.87 | 3.2k tok/s | mem 11.65GB
+step    40 | loss 7.7111 (ema 9.5599) | lr 2.00e-04 | gnorm 0.46 | 3.0k tok/s | mem 11.65GB
+step    60 | loss 7.4248 (ema 8.8923) | lr 3.00e-04 | gnorm 0.65 | 3.0k tok/s | mem 11.65GB
+step    80 | loss 7.1179 (ema 8.3482) | lr 4.00e-04 | gnorm 0.81 | 3.0k tok/s | mem 11.65GB
+step   100 | loss 6.7653 (ema 7.8598) | lr 5.00e-04 | gnorm 1.15 | 3.0k tok/s | mem 11.65GB
+step   120 | loss 6.4376 (ema 7.4326) | lr 6.00e-04 | gnorm 0.56 | 3.0k tok/s | mem 11.65GB
+step   140 | loss 6.2254 (ema 7.0777) | lr 7.00e-04 | gnorm 0.63 | 3.0k tok/s | mem 11.65GB
+step   160 | loss 6.1017 (ema 6.7742) | lr 8.00e-04 | gnorm 0.61 | 3.0k tok/s | mem 11.65GB
+step   180 | loss 5.9326 (ema 6.5176) | lr 9.00e-04 | gnorm 0.48 | 3.0k tok/s | mem 11.65GB
+step   200 | loss 5.7104 (ema 6.2929) | lr 1.00e-03 | gnorm 0.45 | 3.0k tok/s | mem 11.65GB
+step   220 | loss 5.6214 (ema 6.0987) | lr 1.00e-03 | gnorm 0.44 | 3.0k tok/s | mem 11.65GB
+step   240 | loss 5.5944 (ema 5.9234) | lr 1.00e-03 | gnorm 0.51 | 3.0k tok/s | mem 11.65GB
+step   250 | val loss 5.4681
+step   260 | loss 5.4322 (ema 5.7735) | lr 1.00e-03 | gnorm 0.53 | 2.9k tok/s | mem 11.65GB
+step   280 | loss 5.3003 (ema 5.6297) | lr 1.00e-03 | gnorm 0.54 | 3.0k tok/s | mem 11.65GB
+step   300 | loss 5.2905 (ema 5.5120) | lr 1.00e-03 | gnorm 0.46 | 3.0k tok/s | mem 11.65GB
+step   320 | loss 5.1262 (ema 5.4091) | lr 1.00e-03 | gnorm 0.44 | 3.0k tok/s | mem 11.65GB
+step   340 | loss 5.0629 (ema 5.3146) | lr 1.00e-03 | gnorm 0.39 | 3.0k tok/s | mem 11.65GB
+step   360 | loss 4.9965 (ema 5.2272) | lr 1.00e-03 | gnorm 0.36 | 3.0k tok/s | mem 11.65GB
+step   380 | loss 4.9907 (ema 5.1467) | lr 1.00e-03 | gnorm 0.37 | 3.0k tok/s | mem 11.65GB
+step   400 | loss 4.9146 (ema 5.0673) | lr 1.00e-03 | gnorm 0.37 | 3.0k tok/s | mem 11.65GB
+step   420 | loss 4.8011 (ema 4.9886) | lr 1.00e-03 | gnorm 0.41 | 3.0k tok/s | mem 11.65GB
+step   440 | loss 4.7057 (ema 4.9136) | lr 1.00e-03 | gnorm 0.49 | 3.0k tok/s | mem 11.65GB
+step   460 | loss 4.6707 (ema 4.8376) | lr 1.00e-03 | gnorm 0.35 | 3.0k tok/s | mem 11.65GB
+step   480 | loss 4.7286 (ema 4.7713) | lr 1.00e-03 | gnorm 0.40 | 3.0k tok/s | mem 11.65GB
+step   500 | loss 4.5975 (ema 4.7069) | lr 1.00e-03 | gnorm 0.35 | 3.0k tok/s | mem 11.65GB
+step   500 | val loss 4.6369
+[ckpt] step 500 → checkpoints\pilot_0p1b_pm\latest.pt
+step   520 | loss 4.5067 (ema 4.6481) | lr 1.00e-03 | gnorm 0.35 | 2.9k tok/s | mem 11.65GB
+step   540 | loss 4.4824 (ema 4.5990) | lr 1.00e-03 | gnorm 0.36 | 3.0k tok/s | mem 11.65GB
+step   560 | loss 4.4366 (ema 4.5523) | lr 1.00e-03 | gnorm 0.35 | 3.0k tok/s | mem 11.65GB
+step   580 | loss 4.4126 (ema 4.5072) | lr 1.00e-03 | gnorm 0.31 | 3.0k tok/s | mem 11.65GB
+step   600 | loss 4.4021 (ema 4.4681) | lr 1.00e-03 | gnorm 0.37 | 3.0k tok/s | mem 11.65GB
+step   620 | loss 4.3897 (ema 4.4427) | lr 1.00e-03 | gnorm 0.33 | 3.0k tok/s | mem 11.65GB
+step   640 | loss 4.3047 (ema 4.4091) | lr 1.00e-03 | gnorm 0.33 | 3.0k tok/s | mem 11.65GB
+step   660 | loss 4.2687 (ema 4.3749) | lr 1.00e-03 | gnorm 0.31 | 3.0k tok/s | mem 11.65GB
+step   680 | loss 4.2928 (ema 4.3437) | lr 1.00e-03 | gnorm 0.32 | 3.0k tok/s | mem 11.65GB
+step   700 | loss 4.2605 (ema 4.3204) | lr 1.00e-03 | gnorm 0.32 | 3.0k tok/s | mem 11.65GB
+step   720 | loss 4.2442 (ema 4.2924) | lr 1.00e-03 | gnorm 0.32 | 3.0k tok/s | mem 11.65GB
+step   740 | loss 4.1795 (ema 4.2672) | lr 1.00e-03 | gnorm 0.35 | 3.0k tok/s | mem 11.65GB
+step   750 | val loss 4.2878
+step   760 | loss 4.2386 (ema 4.2482) | lr 1.00e-03 | gnorm 0.32 | 2.9k tok/s | mem 11.65GB
+step   780 | loss 4.1371 (ema 4.2267) | lr 1.00e-03 | gnorm 0.32 | 3.0k tok/s | mem 11.65GB
+step   800 | loss 4.1923 (ema 4.2101) | lr 1.00e-03 | gnorm 0.36 | 3.0k tok/s | mem 11.65GB
+step   820 | loss 4.1192 (ema 4.1894) | lr 1.00e-03 | gnorm 0.33 | 3.0k tok/s | mem 11.65GB
+step   840 | loss 4.1457 (ema 4.1750) | lr 1.00e-03 | gnorm 0.33 | 3.0k tok/s | mem 11.65GB
+step   860 | loss 4.0893 (ema 4.1572) | lr 1.00e-03 | gnorm 0.31 | 3.0k tok/s | mem 11.65GB
+step   880 | loss 4.1140 (ema 4.1448) | lr 1.00e-03 | gnorm 0.36 | 3.0k tok/s | mem 11.65GB
+step   900 | loss 4.1337 (ema 4.1233) | lr 1.00e-03 | gnorm 0.31 | 3.0k tok/s | mem 11.65GB
+step   920 | loss 4.0605 (ema 4.1143) | lr 1.00e-03 | gnorm 0.31 | 3.0k tok/s | mem 11.65GB
+step   940 | loss 4.1263 (ema 4.0993) | lr 1.00e-03 | gnorm 0.28 | 3.0k tok/s | mem 11.65GB
+step   960 | loss 4.0689 (ema 4.0821) | lr 1.00e-03 | gnorm 0.30 | 3.0k tok/s | mem 11.65GB
+step   980 | loss 4.0871 (ema 4.0715) | lr 1.00e-03 | gnorm 0.36 | 3.0k tok/s | mem 11.65GB
+step  1000 | loss 4.0558 (ema 4.0589) | lr 1.00e-03 | gnorm 0.36 | 3.0k tok/s | mem 11.65GB
+step  1000 | val loss 4.1379
+[ckpt] step 1000 → checkpoints\pilot_0p1b_pm\latest.pt
+step  1020 | loss 3.9853 (ema 4.0480) | lr 1.00e-03 | gnorm 0.30 | 2.9k tok/s | mem 11.65GB
+step  1040 | loss 3.9155 (ema 4.0343) | lr 1.00e-03 | gnorm 0.36 | 3.0k tok/s | mem 11.65GB
+step  1060 | loss 3.9637 (ema 4.0184) | lr 1.00e-03 | gnorm 0.31 | 3.0k tok/s | mem 11.65GB
+step  1080 | loss 3.9450 (ema 4.0134) | lr 1.00e-03 | gnorm 0.30 | 3.0k tok/s | mem 11.65GB
+step  1100 | loss 4.0246 (ema 4.0068) | lr 1.00e-03 | gnorm 0.33 | 3.0k tok/s | mem 11.65GB

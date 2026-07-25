@@ -189,6 +189,8 @@ flowchart LR
 
 **D-0 补充说明**：0.1B 先导直接采用混合架构（12 层 = 3 × {3 GDN + 1 CSA}），同时训一个同配置纯注意力孪生版作对照。**词表不能用 129280**：hidden 768 时 tied embedding = 99M，会吃掉全部参数预算，故自训 32768 BPE。**Windows 回退方案**：fla 的 GDN kernel 依赖 Triton（无官方 Windows 支持），D-0 用纯 PyTorch 实现的 chunked gated delta rule（与 fla naive 参考实现逐点误差 <1e-4 对拍），0.1B / seq 1024 尺度吞吐损失可接受；正式规模迁移到 WSL2/Linux + fla Triton kernel（阶段 E/F）。
 
+**D-0 结论（2026-07-24，全文见《D0_0p1B先导实验报告.md》）**：双 run 2000 步完成，hybrid val loss 3.768 一致优于 attn_only 3.818（−0.050 nats，全部 5 个评估点）；训练吞吐 hybrid 9.5k / attn 19.7k tok/s（纯 PyTorch GDN 实现代价，fla 迁移是出路）；生成吞吐反转 hybrid 37.8 / attn 8.6 tok/s（GDN 恒定状态 vs 12 层 KV 拼接）；micro batch 标定阴性结果（mb64 反降至 6.0k/23.6GB）——S2 退出标准通过，阶段 E+ 解锁。
+
 现代件组合均为已验证证据：RMSNorm/SwiGLU/RoPE/QK-Norm 经 OLMo 2（arXiv:2501.00656）与 SmolLM3 实证；FFN 内维 ≈ (8/3)·d_model 取整到 128 倍数；embedding 层不加 weight decay。
 
 ### 6.2 显存与吞吐估算（套用到本项目的标准公式）
@@ -226,35 +228,41 @@ flowchart LR
 ### 6.6 D-0 工作站迁移与正式执行方案（v0.3 新增，step by step）
 
 > 本机为全新工作区（无 .venv/data/checkpoints）。以下三步（S0→S1→S2）是当前**唯一活跃执行线**，每步有命令与验收。旧 4060 笔记本上的 D-0 中途结果不迁移——数据与 checkpoint 全部在本机重建，保证基线干净同源。
+>
+> **运行纪律（2026-07-24 实测补充）**：① 本机 torch 设备序 ≠ nvidia-smi 序——torch/CUDA 侧 cuda:0 是 4070（8GB）、cuda:1 才是 PRO 4000（24GB）；**所有训练/测试/生成命令必须前缀 `CUDA_VISIBLE_DEVICES=1`**（单卡视图下 PRO 4000 即为 cuda:0）。注意 **nvidia-smi 侧顺序相反**（index 0 = PRO 4000 / UUID c199…，index 1 = 4070 / UUID baa7…），且 WDDM 下 nvidia-smi 的进程显存读数为 [N/A]、归属不可靠——判断训练是否上卡请看功耗/利用率（PRO 4000 70W 顶格即在跑）。② HF 直连不稳定时以 `HF_ENDPOINT=https://hf-mirror.com` 前缀重跑数据脚本（endpoint 常量在 import 时固定，进程内切换不可靠，必须重跑）。③ 长任务加 `python -u` 关输出缓冲，否则管道日志长时间不可见（tensorboard 标量不受影响）。
+>
+> **S0 执行记录（2026-07-24，全绿）**：venv=Python 3.12.13；torch 2.11.0+cu128（arch_list 含 sm_120）；pytest 2 项全过——GDN 双路径对拍 max diff 6.6e-07（阈值 1e-4）、cache 一致性 1.6e-06、save/load 往返相对误差 7.4e-03。过程中排除三处隐患：a) `src/tais_obsidian/data/memmap.py` 此前从未入库——`.gitignore` 的 `data/` 通配误伤包目录（已改根锚定 `/data/` 等并重建该文件）；b) `check_env.py` 的 sm_XX 解析把 sm_120 误读为 (1,20)（已修为末位 minor 解析，否则 Blackwell 上误报 FAIL）；c) tests 原本 pytest 不可收集（已补 `test_*` 入口）。
+>
+> **S1 执行记录（2026-07-24）**：HF 直连中段 SSL 断流（首次失败）→ `HF_ENDPOINT=https://hf-mirror.com` 重跑成功；语料 FineWeb-Edu sample-10BT（无 fallback 偏差）；train 118.00M + val 2.00M = 120.00M tokens，6 片 train shards + 1 片 val；tokenize 速率 ~2.0M tok/s，总耗时 2.0 min；同步加固 `prepare_data.py`（预置 endpoint 优先、语料流中段失败给出可操作报错）。
 
-#### S0：环境重建（预计 30–60 分钟，含下载）
-
-| # | 步骤 | 命令 / 动作 | 验收 |
-|---|---|---|---|
-| 1 | 独立 Python 环境 | `uv python install 3.12 && uv venv .venv --python 3.12 && source .venv/Scripts/activate` | `python -V` = 3.12.x，且不在 Espressif 路径 |
-| 2 | PyTorch（Blackwell） | `uv pip install torch --index-url https://download.pytorch.org/whl/cu128` | `torch.version.cuda` 显示 cu128+ |
-| 3 | 项目与依赖 | `uv pip install -e . && uv pip install pytest` | `python -c "import tais_obsidian"` 通过 |
-| 4 | 环境自检 | `python scripts/check_env.py` | 全绿：设备 RTX PRO 4000、cap (12,0)、arch 兼容、bf16 实测过 |
-| 5 | 单元测试 | `python -m pytest tests/ -q` | GDN 对拍 <1e-4、cache 一致性、save/load 往返全过 |
-
-#### S1：数据管线（预计 1–2 小时，主要受网络约束）
+#### S0：环境重建（预计 30–60 分钟，含下载）✅ 已完成
 
 | # | 步骤 | 命令 / 动作 | 验收 |
 |---|---|---|---|
-| 6 | 数据准备 | `python scripts/prepare_data.py`（FineWeb-Edu sample-10BT → 自训 32k BPE → 120M tokens；断网自动 hf-mirror → wikitext 兜底并标注） | `data/tokenizer/tokenizer.json` 存在；train ≥118M + val 2M tokens；记录语料来源、压缩率、耗时 |
-| 7 | 过拟合冒烟 | `python scripts/smoke_overfit.py` | hybrid/attn_only 双变体 300 步 final loss <0.1；同时得到 Blackwell 上首个真实吞吐数字 |
+| 1 | 独立 Python 环境 | `uv python install 3.12 && uv venv .venv --python 3.12 && source .venv/Scripts/activate` | ✅ 3.12.13 |
+| 2 | PyTorch（Blackwell） | `uv pip install torch --index-url https://download.pytorch.org/whl/cu128` | ✅ 2.11.0+cu128 |
+| 3 | 项目与依赖 | `uv pip install -e . && uv pip install pytest` | ✅ 含 bitsandbytes / transformers 5.14.1 |
+| 4 | 环境自检 | `CUDA_VISIBLE_DEVICES=1 python scripts/check_env.py` | ✅ 全绿（PRO 4000、cap (12,0)、sm_120、bf16 实测） |
+| 5 | 单元测试 | `CUDA_VISIBLE_DEVICES=1 python -m pytest tests/ -q` | ✅ 2 passed（数值见上） |
 
-#### S2：0.1B pilot 正式训练 + 孪生对拍（预计数小时，24GB 远快于旧机 ~20h）
+#### S1：数据管线（预计 1–2 小时，主要受网络约束）✅ 数据完成（实测 2 min）
 
 | # | 步骤 | 命令 / 动作 | 验收 |
 |---|---|---|---|
-| 8 | hybrid 主 run | `python -m tais_obsidian.train --config configs/pilot_0p1b.json --run_name pilot_0p1b_ws`（先不改 batch 配置，保证与旧基线可比；2000 步） | loss 曲线健康；记录 tok/s 与峰值显存 |
-| 9 | attn_only 孪生 run | 新建 `configs/pilot_0p1b_attn.json`（仅 `attn_only: true`，其余全同）→ 同命令换 run_name | 同数据/同种子/同步数对照成立 |
-| 10 | 吞吐标定 | 显存余量充足（预期）时，加跑 micro_batch 32–64 的短标定（可顺带试 `grad_checkpoint=False` 换速度）；**纯性能测量，不改对比结论** | 本机吞吐/显存基线写入 §12.1 |
-| 11 | 对比与生成 | `python -m tais_obsidian.generate --ckpt checkpoints/<run>/final --prompt "..."`；对比两 run 的 val loss 曲线与生成样例 | D-0 训练报告归档（docs/ 或 runs/ 报告），结论回填 §6.1 |
-| 12 | 可选加长 | 曲线健康则续训至 10k 步（~0.65B tokens，约 6:1 tokens:param）观察 0.1B 尺度混合架构中段行为 | 加长段曲线附加进报告 |
+| 6 | 数据准备 | `HF_ENDPOINT=https://hf-mirror.com python scripts/prepare_data.py`（FineWeb-Edu sample-10BT → 自训 32k BPE → 120M tokens） | ✅ train 118M + val 2M；`data/tokenizer/tokenizer.json` + 7 片 shards |
+| 7 | 过拟合冒烟 | `CUDA_VISIBLE_DEVICES=1 python scripts/smoke_overfit.py` | hybrid/attn_only 双变体 300 步 final loss <0.1；同时得到 Blackwell 上首个真实吞吐数字 |
 
-**S2 退出标准**：双 run 完成 2000 步、曲线健康无 spike；hybrid vs attn_only 的 val loss 差异可测量可解释；本机吞吐/显存基线入库。**不达标不进阶段 E+。**
+#### S2：0.1B pilot 正式训练 + 孪生对拍（预计数小时，24GB 远快于旧机 ~20h）✅ 已完成
+
+| # | 步骤 | 命令 / 动作 | 验收 |
+|---|---|---|---|
+| 8 | hybrid 主 run | `CUDA_VISIBLE_DEVICES=1 python -m tais_obsidian.train --config configs/pilot_0p1b.json --run_name pilot_0p1b_ws --out_dir checkpoints/pilot_0p1b_ws` | ✅ 2000 步健康收官：train 3.58、val 3.768、gnorm 0.21–0.28、9.5k tok/s、峰值 7.02GB |
+| 9 | attn_only 孪生 run | `CUDA_VISIBLE_DEVICES=1 python -u -m tais_obsidian.train --config configs/pilot_0p1b_attn.json` | ✅ 2000 步：train 3.65、val 3.818、19.7k tok/s、峰值 7.04GB（同数据/种子/步数） |
+| 10 | 吞吐标定 | micro 32/64 短标定（`python -u`，临时配置用后清理） | ✅ 阴性结果入库：mb16 最优；mb32 无收益（12.5GB）；mb64 反降 6.0k/23.6GB——出路是 fla kernel 非调 batch |
+| 11 | 对比与生成 | 双 final 生成样例（同 prompt） | ✅ **《D0_0p1B先导实验报告.md》归档**：val −0.050 nats（全评估点一致）；生成反转 hybrid 37.8 / attn 8.6 tok/s；结论回填 §6.1/§12.1 |
+| 12 | 可选加长 | 曲线健康则续训至 10k 步（~0.65B tokens，约 6:1 tokens:param）观察 0.1B 尺度混合架构中段行为 | 未执行（可选，视 E+ 进度再定） |
+
+**S2 退出标准**：双 run 完成 2000 步、曲线健康无 spike ✅；hybrid vs attn_only 的 val loss 差异可测量可解释 ✅（−0.050 nats）；本机吞吐/显存基线入库 ✅（§12.1）。**判定：通过（2026-07-24），阶段 E+ 解锁。**
 
 ---
 
@@ -287,11 +295,11 @@ flowchart LR
 
 | # | 原型 | 内容 | 设计依据 | 退出标准 |
 |---|---|---|---|---|
-| E+-1 | KAL 探针挂点 | 模型 forward 暴露逐层 hidden state 捕获 API（自研 hooks，不依赖 transformers；G/A 两型层分别验证） | 设计 §6/§8.4；路线图 Phase 0 退出标准的自有框架版 | 捕获 API 入库 + 单测过（各层 hidden 形状/数值正确） |
-| E+-2 | 特殊 token 扩容 | `<|recall|>`/`<|blank|>`/`<|gist|>`（+远期 `<|ref|>`/`<|box|>`）的词表落地方案：重训 tokenizer vs 扩展 embedding 二选一，决策记录归档 | 设计 §6/§13.2 Reasoning-native | 决策记录 + config/tokenizer 可表达新增 special |
+| E+-1 | KAL 探针挂点 | 模型 forward 暴露逐层 hidden state 捕获 API（自研 hooks，不依赖 transformers；G/A 两型层分别验证） | 设计 §6/§8.4；路线图 Phase 0 退出标准的自有框架版 | ✅ **2026-07-24 已落地**：`forward(capture_layers=...)` 可选参数（默认二元组行为不变；checkpoint/增量两路径与 hook 参考逐点一致 0.0 diff）+ `tests/test_capture.py` |
+| E+-2 | 特殊 token 扩容 | `<|recall|>`/`<|blank|>`/`<|gist|>`（+远期 `<|ref|>`/`<|box|>`）的词表落地方案 | 设计 §6/§13.2 Reasoning-native | ✅ **已实现（2026-07-24，S2 后解冻）**：`scripts/extend_tokenizer.py` 幂等扩容（id 32768–32772，vocab 32773，原文件备份 tokenizer.v32768.bak.json）+ `tests/test_tokenizer_ext.py`（既有 id 与备份逐点回归）；决策不变——**`ModelConfig.vocab_size` 默认仍 32768**，32776（8 倍数）仅在显式配置启用（E+-3 起），1.5B 正式词表 F-0 统一重训 |
 | E+-3 | KAL 三态头 + P(IK) 辅助目标（原型） | ℓ中层挂 W[d,3] 头；用"已知/未知"迷你数据集（路线图 Phase 1 协议的 0.1B 版）训探针 | 设计 §8.3-1（arXiv:2207.05221）；**T1 首要观测的预演** | 管线跑通；AUROC 数字归档（0.1B 预期信号弱——弱本身即有效信息，不阻塞） |
-| E+-4 | CSA 块通路原型 | CSA 层 stride-4 学习压缩器最小实现 + 压缩 KV 收割/导出 + 注入（namespace 五元组校验 + fail-closed 回退重算） | 设计 §11.1（v0.7） | 注入/回退单测过；注入前后输出一致性偏差报告归档 |
-| E+-5 | PM-stream（mHC n=5）消融 | 残差流 1→5 流（4 内容 + 1 感知-记忆流），双随机约束；同配置短训消融 vs 基线 | 设计 §12.2/§13.4（arXiv:2512.24880）；**最大结构改动，放独立分支** | 消融报告：loss 不劣于基线且信号放大 ≤ 设计约束；**不达标则不进入 1.5B config** |
+| E+-4 | CSA 块通路原型 | CSA 层 stride-4 学习压缩器最小实现 + 压缩 KV 收割/导出 + 注入（namespace 五元组校验 + fail-closed 回退重算） | 设计 §11.1（v0.7） | ✅ **2026-07-24 机制原型已落地**：`model/blockpath.py`（CSACompressor/harvest/inject + NamespaceMismatchError fail-closed + offset 簿记）+ `tests/test_blockpath.py` 4 项；压缩器权重训练、APE 偏差矫正、块边界标记留 E+ 训练阶段 |
+| E+-5 | PM-stream（mHC n=5）消融 | 残差流 1→5 流（4 内容 + 1 感知-记忆流），双随机约束；同配置短训消融 vs 基线 | 设计 §12.2/§13.4（arXiv:2512.24880）；**最大结构改动，放独立分支** | **实现已落地（2026-07-24）**：`model/pmstream.py`（Sinkhorn t_max=20 + PMStreamMix，Eq.3/7/8/9 逐条引用）+ `pm_stream`/`pm_constrain` config 开关（默认关，基线零改动）；恒等初始化 7.3e-7、约束开 Amax 1.000 vs 无约束 3.696、13 项测试全绿；GLM5.2 交叉验证 plan 见《AGENT_PLAN_E+-5_PM-stream.md》。**消融运行中**：111.21M 参数（+3.0%），3.2k tok/s（fp64 应用端 + Sinkhorn 开销，ETA ~11h），对照基线 val 3.768 |
 | E+-6 | HRL 侧信道头簇 | 五个微头（预取/写显著性/冲突检测/归因监测/联想触发）挂 PM-stream，KL-warmup 管线 | 设计 §11.2（v0.7）；依赖 E+-5 | 头参数量 <1%；warmup 管线跑通（行为训练留 T3） |
 
 ---
@@ -427,7 +435,7 @@ llama.cpp 已有 `GGML_OP_GATED_DELTA_NET` 算子与 Qwen3-Next converter；保�
 - 训练 FLOPs：≈ 6N/token（N=参数量，不含词表大头）。
 - token 预算锚点：Chinchilla 20:1（arXiv:2203.15556）；OLMo 2 1B = 4T；OLMo Hybrid 7B = 5.5T；SmolLM2 1.7B = 11T（过训）。
 - 超参：AdamW β(0.9,0.95) eps 1e-8 wd 0.1 clip 1.0；lr 2e-4–3e-4（1.5B）/ 1e-3（D-0）；WSD warmup ~2000 步末 10–20% 衰减；global batch 0.5M–2M token（D-0 为 64k）。
-- 本机基线（v0.3 工作站，待 S2 填充）：RTX PRO 4000 Blackwell SFF 24GB / sm_120 / 70W / cu128 / 实测吞吐 __ tok/s、峰值显存 __ GB。历史参考：4060 Laptop 8GB ~1.8k tok/s（micro 16×accum 4×seq 1024，峰值 7.0GB）、生成 ~43 tok/s。
+- 本机基线（v0.3 工作站，S2 实测）：RTX PRO 4000 Blackwell SFF 24GB / sm_120 / 70W / torch 2.11.0+cu128。0.1B pilot（micro 16×accum 4×seq 1024，grad ckpt 开）：**hybrid 训练 9.5k tok/s、峰值显存 7.02GB、生成 37.8 tok/s**；attn_only 孪生训练 ~21.7k tok/s（SDPA 高度优化 vs 纯 PyTorch chunked GDN 的 Python 级开销——阶段 E/F 迁 fla Triton kernel 的主要动机）。历史参考：4060 Laptop 8GB ~1.8k tok/s（峰值 7.0GB）、生成 ~43 tok/s。
 
 ### 12.2 核心参考资料
 
