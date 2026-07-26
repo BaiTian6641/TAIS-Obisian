@@ -4,7 +4,7 @@
 
 - 日期：2026-07-24（v0.4：正式命名、原生 1M、数据集计划、Carbon 架构图；**v0.5：新增"原生集成收益分析与可行性交叉验证"（§8），KAL 等部件明确为骨干内生设计**）；2026-07-26（**v2.4：新增 §28「动态词表：三级生长阶梯与全谱系自包含」——tokenizer 动态化，数据中心到边缘全谱系自我评估/自我编译/自我更新，端侧睡眠自治**；**v2.5：新增 §29「第三轮独立交叉验证：五大架构命题逐项复核」——对"自我进化/逐会话学习/元认知闭环/注意力自编译/动态词表"五命题做联网独立复核，补充 11 项新证据（TTT-E2E、量化态探针、MemoryGraft、Titans 三变体同构、Kaplan 输出侧扩表、Over-Tokenized 输入侧 log-linear、Microsoft 后门扫描器等），修订 §26.2 安全对策与 §28.7 词表边界**）
 - 配套图纸：《TAIS_Obsidian_架构详图.png》（InfraTech 式详图 × IBM Carbon 设计语言）
-- 配套文档：《动态知识块记忆系统_设计文档》(v0.3)、《DKB-MS_实施规划与路线图》、《自我学习LLM框架构想_HippoK》(v0.2)
+- 配套文档：《动态知识块记忆系统_设计文档》(v0.4)、《从零构建TAIS-Obsidian_总体实施计划》(v0.4)、《TAIS_Obsidian_子系统架构规格》(v1.0)、《TAIS_Obsidian_接口与实现计划》(v1.0)、《TAIS_Obsidian_部件实现详细计划》(v1.0)
 - 目标硬件：RTX PRO 4000 Blackwell SFF（24GB GDDR7、432GB/s）
 
 > 命名：TAIS = 泰斯人工智能复合体（Tais AI Syndicate）；Obsidian = 黑曜石框架。模型谱系：TAIS Obsidian 1B / 1.5B /（远期）4B-A1B。

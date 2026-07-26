@@ -36,8 +36,8 @@
 ### 11. Howard–Kahana 时间上下文模型（TCM）— Howard & Kahana 2002 J Math Psych `[已核-概念级]` ⭐⭐【机会】
 记忆检索由**漂移的"时间上下文"**驱动——"何时"经历的情境作检索线索，相近时间项目聚类回忆。→ §23.2 `score(block)` 的 **temporal 项**——route_key 加 temporal context 维度。
 
-### 12. Kairos / NORA（验证门控 Hebbian）— NeurIPS 2025 `[未核]`⚠ ⭐
-**本次未能检索到该论文**。设计引用：一次性 Hebbian 写入需经**验证门**才生效。→ 路径块自强化（§24.3）与验证门依据。**【风险】核实前不应作承重证据；可用 Krotov-Hopfield 类一次性记忆存储、Ramsauer Hopfield-attention 等已核机制替代**。
+### 12. Kairos / NORA（验证门控 Hebbian）— Singh & Yu (UPenn), NeurIPS 2025 NORA Workshop, CEUR Vol-4162 paper4 ⭐⭐【机会】`[已核]`✅
+**真实标题**：《Validation-Gated Hebbian Learning for Adaptive Agent Memory》。**核心主张（已核实）**：KG 边在**验证通过的推理**期间强化（LTP analog）、未用边衰减（LTD analog）、频繁共激活实体形成涌现连接；验证门 = 四维质量评估（logical/grounding/novelty/alignment）；**关键设计原则：novelty 与 correctness 是正交维度，在验证系统中平均会退化**。→ 路径块自强化（§24.3）与 CA1 验证门的直接依据。**【注意】为 workshop proof-of-concept（非主会），三实验为机械/效用/消融验证，无大规模基准；作承重证据时配 Ramsauer Hopfield-attention ✅ 与三因子 STDP ✅ 加固**。
 
 ### 13. BCI 解码器再校准（神经漂移）— 领域共识 `[已核-概念级]` ⭐
 训练好的（线性）探针随主干分布漂移而失效，需定期再校准。→ KAL 探针管线维护策略——部署后周期性重新拟合 SAPLMA/已知-未知探针。
@@ -59,7 +59,7 @@
 | 提取练习 → 训练课程加"自我测试/验证门" | 决定固化前必经校验集回归（防投毒+借测试增强学习）。|
 
 ### 🟡 中度承重（影响子参数非架构）
-- **cSPW-R → 睡眠分簇回放+固化期锁定**：若 2026 论文坐实则承重；**当前依赖未核来源，降级为中-低承重，用 Buzsáki SPW-R 综述兜底**。
+- **cSPW-R → 睡眠分簇回放+固化期锁定**：✅ **2026 论文全文已核**（Vöröslakos/Buzsáki），DOWN 态合并锁+簇分批+网络隔离三项全部直接引述，**承重升回 🟢**。
 - 监测/控制分离 → KAL 双层（L1 监测/L2 控制）。
 - TCM → route_key 加 temporal 维度。
 - McGaugh 杏仁核 → affect 权重项。
@@ -75,4 +75,4 @@
 2. **CLS 双时间尺度**——奠基整个"零梯度快写+睡眠慢固化"架构，与运行时写不对称（W0–W2 vs W3+）安全红线一脉相承。
 3. **海马索引理论**——页表/载荷的"精确同构"是 HRL 注入拓扑的唯一理论依据，承重最重。
 
-**建议**：把 §23.1 表里**装饰行**明确标"命名性类比"；把 **cSPW-R** 这条承重但依赖未核 2026 论文的依据降级并用 Buzsáki 兜底，否则文档"事实来源"纪律（AGENTS.md §6）会被一处验证码墙削弱。
+**建议**：把 §23.1 表里**装饰行**明确标"命名性类比"。**cSPW-R（Vöröslakos/Buzsáki 2026）与 Kairos（NORA 2025）均已本轮全文核实**——cSPW-R 升回 🟢 承重（DOWN 态合并锁直接引述），Kairos 为 workshop PoC（配 Ramsauer/三因子 STDP 加固）。

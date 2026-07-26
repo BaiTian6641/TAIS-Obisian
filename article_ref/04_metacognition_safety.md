@@ -45,7 +45,12 @@ CoT 解释**系统性误表**模型预测真实原因；加偏置特征（如重
 - **Meta-R1** — arXiv:**2508.17291** ✅ 已核实（**【勘误】设计文档/前轮记的 +8% 错；实测超 SOTA 高达 +27.3%**，token 消耗降到 15.7–32.7%、效率 +14.8%；把推理分解为 object-level + meta-level，级联式主动规划/在线调节/自适应早停；可跨数据集与底座迁移）。
 - **AutoMeco（"LLMs Have Intrinsic Meta-Cognition, but Need a..."）** — EMNLP 2025 main 171 ✅ 新增。自动化元认知评测：用 hidden state + logits + 概率算步级置信 spred，PRM 标注步正确性，输出 AUROC/AUPR/FPR95。→ **KAL 评测协议参考**（步级、PRM 标注、FPR95）。
 - **"LLMs Are Capable of Metacognitive Monitoring and Control of Their Internal Activations"** — NeurIPS Poster ✅ 新增【关键·安全】。神经反馈范式量化 LLM 报告/控制自身激活的能力；发现"元认知空间"维度**远低于**神经空间（LLM 只能监控激活的小子集）→ 支撑 KAL 用低维线性头；**安全警示**：模型可能**混淆(obfuscate)**内部过程以逃避激活式监督 → KAL 探针权重须**冻结、不进模型梯度影响**（与监测/执行分置红线呼应）。
-- **CLEAR / Know More Clearer / MeCo / Think2 / MIND** — ⚠️ 本会话仍未独立核实各 arXiv ID（数字来自设计文档二手引用：CLEAR 70–80% 检出、Know More Clearer ECE 60→24%、MeCo ACL 2025 学到探针决定工具调用）。→ 证明"元认知可被显式训练且带来增益"是 KAL 同代平行工作；但全部外挂/后训练式，TAIS 差异化在预训练期即内生。
+- **Know More, Know Clearer** — arXiv:**2602.12996** (Chen et al., 13 Feb 2026) ✅ 已核实。用内部认知信号把知识空间分为 **mastered/confused/missing** 三区，引导定向知识扩展；**认知一致性机制同步主观确定性与客观准确率（校准）**。→ 与 KAL 三态（知道/不确定/空白）+ 校准目标直接同构。
+- **MeCo** — arXiv:**2502.12961** (Li et al., **ACL 2025 camera-ready**) ✅ 已核实（标题《Adaptive Tool Use in LLMs with Meta-Cognition Trigger》）。从**表示空间高级认知信号**量化元认知分数决定何时调用工具，**fine-tuning-free、成本极低**。→ `<|recall|>` 触发 HRL 的同族（学到探针决定何时"调用"外部记忆）。
+- **Think²** — arXiv:**2602.18806** (Elenjical, Kavuri, Varma, 21 Feb 2026) ✅ 已核实。把 **Ann Brown 监管周期**（Planning/Monitoring/Evaluation）做成结构化 prompting + 轻量 dual-process MetaController；**自校正成功 3×、580 query 对盲测 84% 信任偏好**。→ KAL 监测-执行分置 + 自我校正训练参考。
+- **MIND** — arXiv:**2509.05714** (Fan et al., 6 Sep 2025) ✅ 已核实。多模态元认知知识编辑：构建**元知识记忆**做自我觉察、**博弈论交互监控知识激活**、label refinement 抗噪。→ CA1 仲裁 + 知识激活监控参考。
+- **CLEAR** — ❌ **误归属已删除**：arXiv 2412.16112 实为《CLEAR: Conv-Like Linearization Revs Pre-Trained Diffusion Transformers Up》（DiT 论文，非元认知框架）。"entropy-triggered expert expansion / 70-80% 检出" 的元认知 CLEAR 无法定位，**从框架群移除**；该生态位由 Know More Clearer（mastered/confused/missing 三区）+ AutoMeco（步级评测）覆盖。
+- **结论**：元认知框架群**已从"待核实"升为 6 篇全核实**（Meta-R1/AutoMeco/Know More Clearer/MeCo/Think²/MIND），证明"元认知可被显式训练且带来增益"是 KAL 的成熟同代平行工作；但**全部外挂/后训练式**，TAIS 差异化在**预训练期即把探针/干预头内生为 checkpoint 权重**。
 - **"Entropy Alone is Insufficient for Safe Selective Prediction in LLMs"** ✅ 新增【关键·评测】。entropy-based UQ 不足；须监督式 correctness 探针（Kadavath 式）；部署指标应用 **AURC（risk-coverage 曲线下面积）+ TCE（target calibration error）**，而非仅 AUROC。→ **KAL 评测铁律升级**：不止 AUROC≥0.8，还要报 AURC/TCE。
 - **CritiCal（critique-based calibration SFT）** ✅ 新增。LRMs（推理模型）事实校准稳定性优于 LLMs（归因于扩展推理）→ TAIS reasoning-native 有助校准。
 
