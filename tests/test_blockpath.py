@@ -125,8 +125,8 @@ def check_inject_incremental(device: str) -> None:
         # A 层 k/v 长度 = 注入 + 原有；G 层 state 逐点相等
         for i, t in enumerate(cfg.layer_types):
             if t == "A":
-                assert cache2["layers"][i]["k"].shape[2] == 8 + n_inj
-                assert cache2["layers"][i]["v"].shape[2] == 8 + n_inj
+                assert cache2["layers"][i]["k"].shape[1] == 8 + n_inj
+                assert cache2["layers"][i]["v"].shape[1] == 8 + n_inj
             else:
                 for key, v in g_before[i].items():
                     assert torch.equal(cache2["layers"][i][key], v), (i, key)
@@ -136,7 +136,7 @@ def check_inject_incremental(device: str) -> None:
             assert logits.shape == (1, 1, cfg.vocab_size), logits.shape
         assert cache2["pos"] == pos_before + n_inj + 3
         for i in a_layers:
-            assert cache2["layers"][i]["k"].shape[2] == 8 + n_inj + 3
+            assert cache2["layers"][i]["k"].shape[1] == 8 + n_inj + 3
     print(f"[d] 注入 {n_inj} 条 + 增量 3 步：pos/形状簿记正确，G 层 state 逐点不变")
 
 

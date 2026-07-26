@@ -14,12 +14,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ..config import ModelConfig
-from .attention import FullAttention
 from .common import RMSNorm
 from .gdn import GDNBlock
 from .pmstream import PMStreamMix
 from .tais_kernel import TAISKernel
-from .tri_attention import TriAttention
+from .tri_attention import TriRetrievalAttention
 
 
 class SwiGLU(nn.Module):
@@ -34,7 +33,7 @@ class SwiGLU(nn.Module):
 
 
 class Block(nn.Module):
-    """一个 mixer(GDN/Attn) + 一个 MLP，各自 pre-norm + residual。
+    """一个 mixer(GDN-MemBlock 或 TriRetrievalAttention) + 一个 MLP，各自 pre-norm + residual。
 
     pm_stream>1 时残差改为 mHC 多流（mixer/mlp 各为一个 mHC 层，见 pmstream.py）；
     pm_stream=1 时 forward 与既有单流版本逐行一致（默认，数值零改动）。
@@ -47,11 +46,10 @@ class Block(nn.Module):
         self.norm1 = RMSNorm(cfg.d_model, cfg.rms_eps)
         if layer_type == "G":
             self.mixer = GDNBlock(cfg)
-        elif cfg.attn_impl == "tri" and not cfg.attn_only:
-            # 三级注意力栈（E+-7）：attn_only=True 对照组始终全注意力（plan 纪律）
-            self.mixer = TriAttention(cfg)
         else:
-            self.mixer = FullAttention(cfg)
+            # "A" 层统一为 TriRetrievalAttention（三级检索注意力，DeepSeek V4/NSA 谱系）；
+            # 2026-07 起移除旧 RetrievalAttention 占位与 attn_only 对照组。
+            self.mixer = TriRetrievalAttention(cfg)
         self.norm2 = RMSNorm(cfg.d_model, cfg.rms_eps)
         self.mlp = SwiGLU(cfg.d_model, cfg.mlp_hidden)
         if cfg.pm_stream > 1:
@@ -102,7 +100,7 @@ class TaisObsidianForCausalLM(nn.Module):
         self.norm_f = RMSNorm(cfg.d_model, cfg.rms_eps)
         # 三级栈层号写入（inject_hca_entries 的 namespace 五元组校验用）
         for i, layer in enumerate(self.layers):
-            if isinstance(layer.mixer, TriAttention):
+            if isinstance(layer.mixer, TriRetrievalAttention):
                 layer.mixer.layer_idx = i
         # lm_head 与 embed 共享权重（tied）
         self.apply(self._init_weights)

@@ -45,7 +45,6 @@ DEFAULTS = dict(
     val_batches=20,
     log_every=20,
     ckpt_every=500,
-    attn_only=False,
     # KAL 内生训练（T1 预训练后期；默认 0.0=关，既有训练零改动）：
     # kal_aux_weight>0 时启用 P(IK) 内生辅助损失（kal_pik_aux_loss），
     # 探针梯度只进 KAL 头（detach 主干，监测/执行分置红线）。
@@ -196,12 +195,9 @@ def main() -> None:
     torch.backends.cudnn.allow_tf32 = True
 
     # pm_stream/pm_constrain 缺省 = 1/True（单流基线零改动）；PM 消融在 config JSON 中加 "pm_stream": 5
-    # attn_impl 缺省 = "full"（全注意力基线零改动）；三级栈消融在 config JSON 中加 "attn_impl": "tri"
     model_cfg = ModelConfig(
-        attn_only=cfg["attn_only"],
         pm_stream=cfg.get("pm_stream", 1),
         pm_constrain=cfg.get("pm_constrain", True),
-        attn_impl=cfg.get("attn_impl", "full"),
         tri_window=cfg.get("tri_window", 512),
         tri_csa_stride=cfg.get("tri_csa_stride", 4),
         tri_csa_topk=cfg.get("tri_csa_topk", 128),

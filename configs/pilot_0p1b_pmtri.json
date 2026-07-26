@@ -16,7 +16,5 @@
   "val_batches": 20,
   "log_every": 20,
   "ckpt_every": 500,
-  "attn_only": false,
-  "attn_impl": "tri",
   "pm_stream": 5
 }

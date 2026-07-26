@@ -86,9 +86,18 @@ class HRLIndexer(nn.Module):
     对主干输入 detach（见 forward 的 detach_input 参数，默认 True=隔离，隔离即默认开）。
     """
 
-    def __init__(self, d_model: int):
+    def __init__(self, d_model: int, use_lightning: bool = True, n_index_heads: int = 4, d_index: int = 32):
         super().__init__()
         self.score = nn.Linear(d_model, 1)
+        # 真正的 CSA Indexer（DSA lightning indexer 式，model/hrl_indexer.py）：
+        # 独立多头低维打分器，对候选块集合打分（区别于上面的单层骨架 nn.Linear(d,1)）。
+        # use_lightning=True 时启用（默认）；False 退回骨架（消融对照）。
+        self.use_lightning = use_lightning
+        if use_lightning:
+            from .hrl_indexer import LightningIndexer
+            self.lightning = LightningIndexer(d_model, n_index_heads, d_index)
+        else:
+            self.lightning = None
 
     def forward(self, query: torch.Tensor, detach_input: bool = True) -> torch.Tensor:
         """query [...,d] → score [...,1]。正式 top-k 分块归并在 runtime（M4）。
@@ -99,6 +108,49 @@ class HRLIndexer(nn.Module):
         if detach_input:
             query = query.detach()
         return self.score(query)
+
+    def score_candidates(
+        self,
+        query: torch.Tensor,
+        candidates: torch.Tensor,
+        detach_input: bool = True,
+    ) -> torch.Tensor:
+        """对候选块集合打分（真正的 CSA Indexer 路径，DSA lightning indexer 式）。
+
+        query [B,Tq,d]（当前思考段），candidates [B,Tk,d]（候选块表示）→ 分数 [B,Tq,Tk]。
+        供 runtime Pager 做 top-k 块检索（M4 起用）；token 域/块域同构（一个打分器两种对象）。
+        detach_input 隔离主干（红线）。未启用 lightning 时 fail-closed（RuntimeError）。
+        """
+        if self.lightning is None:
+            raise RuntimeError("LightningIndexer 未启用（use_lightning=False），无法用 score_candidates")
+        if detach_input:
+            query = query.detach()
+            candidates = candidates.detach()
+        return self.lightning(query, candidates)
+
+    def topk_candidates(
+        self,
+        query: torch.Tensor,
+        candidates: torch.Tensor,
+        k: int,
+        detach_input: bool = True,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """打分 + top-k 候选（离散，无梯度）。返回 (top_scores [B,Tq,k], top_idx [B,Tq,k])。"""
+        if self.lightning is None:
+            raise RuntimeError("LightningIndexer 未启用，无法用 topk_candidates")
+        if detach_input:
+            query = query.detach()
+            candidates = candidates.detach()
+        return self.lightning.topk_indices(query, candidates, k)
+
+    def kl_warmup_loss(self, query: torch.Tensor, candidates: torch.Tensor, teacher_scores: torch.Tensor) -> torch.Tensor:
+        """warmup：KL 散度对齐 indexer 分布到稠密教师（DSA warmup 范式，T2）。
+
+        teacher_scores [B,Tq,Tk]：稠密教师（全块枚举打分），detach 后作目标。
+        """
+        if self.lightning is None:
+            raise RuntimeError("LightningIndexer 未启用，无法 KL warmup")
+        return self.lightning.kl_warmup_loss(query, candidates, teacher_scores)
 
     def load_from_csa_indexer(self, csa_indexer_weight: torch.Tensor) -> None:
         """用 CSA indexer 权重初始化（设计 §11.1：HRL 块索引器与 CSA token 索引器同构）。
@@ -115,7 +167,7 @@ class HRLIndexer(nn.Module):
     def init_from_attention_qproj(self, q_proj_weight: torch.Tensor, d_model: int, n_q_heads: int, head_dim: int) -> None:
         """从注意力 q_proj 派生 indexer 初始化（设计 §11.1 的可提取近似）。
 
-        依据：本仓库两个注意力实现（full=FullAttention、tri=三级栈）的"检索打分"都是
+        依据：本仓库两个注意力实现（tri=TriRetrievalAttention（已移除旧全注意力占位））的"检索打分"都是
         query 对 key 的点积（tri 的 CSA 分支选择分数 = 压缩注意力分数 Softmax(q·K̃)，
         **非独立 indexer 模块**，见 tri_attention.py docstring）。故"CSA indexer 向量"在
         当前实现中无独立实体，最贴近的可提取来源是 **q_proj 的打分方向聚合**——
@@ -217,6 +269,28 @@ class TAISKernel(nn.Module):
             sparse_key=self.dg_proj(query),
             score=self.hrl_indexer(query, detach_input=detach_input),
         )
+
+    def route_candidates(
+        self,
+        query: torch.Tensor,
+        candidates: torch.Tensor,
+        k: int | None = None,
+        detach_input: bool = True,
+    ):
+        """对候选块集合检索（真正的 CSA Indexer 路径，DSA lightning indexer 式）。
+
+        query [B,Tq,d]（当前思考段），candidates [B,Tk,d]（候选块表示）；
+        k=None 返回全部分数 [B,Tq,Tk]，否则返回 top-k (scores, idx)。
+        token 域（压缩条目）/块域（知识块）同构——一个打分器两种检索对象（设计 §11.1）。
+        detach_input 隔离主干（MoE-RL 红线）。
+        """
+        if k is None:
+            return self.hrl_indexer.score_candidates(query, candidates, detach_input=detach_input)
+        return self.hrl_indexer.topk_candidates(query, candidates, k, detach_input=detach_input)
+
+    def indexer_kl_warmup_loss(self, query, candidates, teacher_scores):
+        """HRL Indexer 的 KL warmup（T2，DSA warmup 范式，对齐稠密教师）。"""
+        return self.hrl_indexer.kl_warmup_loss(query, candidates, teacher_scores)
 
     def load_indexer_from_csa(self, csa_indexer_weight: torch.Tensor) -> None:
         """用 CSA indexer 权重初始化 HRL Indexer（设计 §11.1 同构初始化）。"""

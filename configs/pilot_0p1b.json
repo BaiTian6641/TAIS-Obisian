@@ -15,6 +15,5 @@
   "val_every": 250,
   "val_batches": 20,
   "log_every": 20,
-  "ckpt_every": 500,
-  "attn_only": false
+  "ckpt_every": 500
 }

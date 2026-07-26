@@ -18,7 +18,7 @@ from tais_obsidian.config import ModelConfig
 from tais_obsidian.model.model import TaisObsidianForCausalLM
 
 
-def tiny_cfg(attn_only: bool = False) -> ModelConfig:
+def tiny_cfg() -> ModelConfig:
     return ModelConfig(
         vocab_size=512,
         d_model=256,
@@ -30,7 +30,6 @@ def tiny_cfg(attn_only: bool = False) -> ModelConfig:
         n_qk_heads=2,
         mlp_hidden=688,
         max_seq=128,
-        attn_only=attn_only,
         check_0p1b_params=False,
     )
 
@@ -54,21 +53,20 @@ def check_cache(model: TaisObsidianForCausalLM, device: str, tag: str) -> None:
 
 def main() -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    for attn_only in (False, True):
-        torch.manual_seed(42)
-        model = TaisObsidianForCausalLM(tiny_cfg(attn_only)).to(device).eval()
-        check_cache(model, device, f"attn_only={attn_only}")
-        with tempfile.TemporaryDirectory() as tmp:
-            model.save_pretrained(tmp)
-            model2 = TaisObsidianForCausalLM.from_pretrained(tmp, device)
-            ids = torch.randint(0, 512, (1, 16), device=device)
-            with torch.no_grad():
-                o1 = model(ids)[0]
-                o2 = model2(ids)[0]
-            d = (o1 - o2).abs().max().item()
-            rel = d / o1.abs().max().item()
-            print(f"[attn_only={attn_only}] save/load 往返: max diff {d:.2e}, 相对 {rel:.2e}")
-            assert rel < 1e-2, rel  # bf16 存储的相对误差量级
+    torch.manual_seed(42)
+    model = TaisObsidianForCausalLM(tiny_cfg()).to(device).eval()
+    check_cache(model, device, "hybrid")
+    with tempfile.TemporaryDirectory() as tmp:
+        model.save_pretrained(tmp)
+        model2 = TaisObsidianForCausalLM.from_pretrained(tmp, device)
+        ids = torch.randint(0, 512, (1, 16), device=device)
+        with torch.no_grad():
+            o1 = model(ids)[0]
+            o2 = model2(ids)[0]
+        d = (o1 - o2).abs().max().item()
+        rel = d / o1.abs().max().item()
+        print(f"[hybrid] save/load 往返: max diff {d:.2e}, 相对 {rel:.2e}")
+        assert rel < 1e-2, rel  # bf16 存储的相对误差量级
     print("test_cache 全部通过。")
 
 

@@ -113,7 +113,11 @@ def harvest_block_kv(
             continue
         st = cache["layers"][i]
         comp = compressor_by_layer[i]
-        k_comp, v_comp = comp(st["k"], st["v"])
+        # 布局适配：TriRetrievalAttention 的 state k/v 为 [B, T, n_kv, hd]（dim=1=T），
+        # 压缩器需要 [B, n_kv, T, hd]（dim=1=n_kv）——转置后再压缩。
+        k = st["k"].transpose(1, 2) if st["k"].shape[1] != cfg.n_kv_heads else st["k"]
+        v = st["v"].transpose(1, 2) if st["v"].shape[1] != cfg.n_kv_heads else st["v"]
+        k_comp, v_comp = comp(k, v)
         layers[i] = (k_comp, v_comp)
         namespaces[i] = make_namespace(cfg, i, k_comp.dtype)
     return {"namespace": namespaces, "layers": layers}
@@ -143,8 +147,13 @@ def inject_block_kv(cache: dict, block_kv: dict, cfg: ModelConfig) -> dict:
         st = cache["layers"][layer_idx]
         expected = make_namespace(cfg, layer_idx, st["k"].dtype)
         check_namespace(expected, block_kv["namespace"][layer_idx])
-        k_new = torch.cat([k_comp.to(device=st["k"].device, dtype=st["k"].dtype), st["k"]], dim=2)
-        v_new = torch.cat([v_comp.to(device=st["v"].device, dtype=st["v"].dtype), st["v"]], dim=2)
+        # 布局适配：压缩块 k/v 为 [B, n_kv, N, hd]（dim=2=N），拼接受 state 布局影响——
+        # TriRetrievalAttention state 为 [B, T, n_kv, hd]（dim=1=T），拼接需先转 state 为
+        # [B, n_kv, T, hd]，dim=2 前端拼接后转回 [B, T, n_kv+N, hd]。
+        sk = st["k"].transpose(1, 2) if st["k"].shape[1] != cfg.n_kv_heads else st["k"]
+        sv = st["v"].transpose(1, 2) if st["v"].shape[1] != cfg.n_kv_heads else st["v"]
+        k_new = torch.cat([k_comp.to(device=sk.device, dtype=sk.dtype), sk], dim=2)
+        v_new = torch.cat([v_comp.to(device=sv.device, dtype=sv.dtype), sv], dim=2)
         n_inj = k_comp.shape[2]
         assert k_comp.shape[:3] == v_comp.shape[:3], "k/v 压缩长度不一致"
         if total_inj is None:
@@ -153,5 +162,8 @@ def inject_block_kv(cache: dict, block_kv: dict, cfg: ModelConfig) -> dict:
             raise NamespaceMismatchError(
                 f"各层注入长度不一致：{total_inj} vs {n_inj}（层 {layer_idx}），拒绝注入"
             )
+        # 转回 state 布局 [B, T+n_inj, n_kv, hd]
+        k_new = k_new.transpose(1, 2) if st["k"].shape[1] != cfg.n_kv_heads else k_new
+        v_new = v_new.transpose(1, 2) if st["v"].shape[1] != cfg.n_kv_heads else v_new
         new_layers[layer_idx] = {**st, "k": k_new, "v": v_new}
     return {"pos": cache["pos"] + (total_inj or 0), "layers": new_layers}

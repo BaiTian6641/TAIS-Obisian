@@ -18,16 +18,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from tais_obsidian.config import ModelConfig
-from tais_obsidian.model.attention import FullAttention
 from tais_obsidian.model.blockpath import (
     NamespaceMismatchError,
     make_namespace,
 )
 from tais_obsidian.model.model import TaisObsidianForCausalLM
-from tais_obsidian.model.tri_attention import TriAttention
+from tais_obsidian.model.tri_attention import TriRetrievalAttention
 
 
-def tiny_cfg(attn_impl: str = "tri", attn_only: bool = False) -> ModelConfig:
+def tiny_cfg() -> ModelConfig:
     # 4 层 = G,G,G,A：唯一 "A" 层为 idx 3；tri 超参按 max_seq=128 缩小以压实各分支路径
     return ModelConfig(
         vocab_size=512,
@@ -40,8 +39,6 @@ def tiny_cfg(attn_impl: str = "tri", attn_only: bool = False) -> ModelConfig:
         n_qk_heads=2,
         mlp_hidden=688,
         max_seq=128,
-        attn_only=attn_only,
-        attn_impl=attn_impl,
         tri_window=32,
         tri_csa_stride=4,
         tri_csa_topk=8,
@@ -52,10 +49,10 @@ def tiny_cfg(attn_impl: str = "tri", attn_only: bool = False) -> ModelConfig:
 
 def _build(device: str, **kw):
     torch.manual_seed(0)
-    cfg = tiny_cfg(**kw)
+    cfg = tiny_cfg()
     model = TaisObsidianForCausalLM(cfg).to(device).eval()
     tri = model.layers[3].mixer
-    assert isinstance(tri, TriAttention)
+    assert isinstance(tri, TriRetrievalAttention)
     return cfg, model, tri
 
 
@@ -82,14 +79,11 @@ def check_shapes(device: str) -> None:
         for key in ("o_win", "o_csa", "o_hca"):
             assert aux1[key].shape == (B, cfg.n_q_heads, 1, cfg.head_dim)
         assert st1["k"].shape[1] == T + 1
-    # 纪律：默认 attn_impl="full" 走 CSAAttention；attn_only=True + "tri" 仍全注意力
+    # 纪律：唯一 "A" 层统一为 TriRetrievalAttention（旧 attn_only 对照组已移除）
     torch.manual_seed(0)
-    m_def = TaisObsidianForCausalLM(tiny_cfg(attn_impl="full")).to(device)
-    assert isinstance(m_def.layers[3].mixer, FullAttention)
-    torch.manual_seed(0)
-    m_ao = TaisObsidianForCausalLM(tiny_cfg(attn_impl="tri", attn_only=True)).to(device)
-    assert all(isinstance(b.mixer, FullAttention) for b in m_ao.layers)
-    print("[a] 形状（整段/增量、分支/门控/融合）与 attn_only 纪律通过")
+    m_def = TaisObsidianForCausalLM(tiny_cfg()).to(device)
+    assert isinstance(m_def.layers[3].mixer, TriRetrievalAttention)
+    print("[a] 形状（整段/增量、分支/门控/融合）与统一三级栈纪律通过")
 
 
 def check_causality(device: str) -> None:
@@ -256,8 +250,7 @@ def check_save_load(device: str) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         model.save_pretrained(tmp)
         model2 = TaisObsidianForCausalLM.from_pretrained(tmp, device)
-    assert model2.config.attn_impl == "tri"
-    assert isinstance(model2.layers[3].mixer, TriAttention)
+    assert isinstance(model2.layers[3].mixer, TriRetrievalAttention)
     assert model2.layers[3].mixer.layer_idx == 3
     torch.manual_seed(5)
     ids = torch.randint(0, 512, (1, 24), device=device)

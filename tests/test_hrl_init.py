@@ -24,7 +24,7 @@ def _tri_model(with_a: bool = True) -> TaisObsidianForCausalLM:
         vocab_size=64, d_model=D, n_layer=4, block_pattern=pattern,
         n_q_heads=4, n_kv_heads=2, head_dim=8, n_v_heads=4, n_qk_heads=2,
         mlp_hidden=64, max_seq=16, grad_checkpoint=False, check_0p1b_params=False,
-        attn_impl="tri", kernel_enabled=True, kernel_dg_dim=32, kernel_dg_topk=4,
+        kernel_enabled=True, kernel_dg_dim=32, kernel_dg_topk=4,
     )
     return TaisObsidianForCausalLM(cfg).eval()
 

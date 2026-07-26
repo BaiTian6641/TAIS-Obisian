@@ -26,14 +26,16 @@
 ### 2.1 代码结构
 
 - `src/tais_obsidian/`：框架包（`uv pip install -e .` 后可 import）
-  - `config.py`：ModelConfig dataclass + JSON 读写（含 `pm_stream`/`pm_constrain`/`attn_impl`/`tri_*` 开关，默认全关=基线）
-  - `model/`：`attention.py`（CSA 全注意力占位：RoPE+GQA+QK-Norm+SDPA，KV cache）、`gdn.py`（GDN：naive_recurrent + chunked 双路径，纯 PyTorch）、`model.py`（`TaisObsidianForCausalLM`，tied embedding，自研 `save_pretrained`/`from_pretrained`；`forward(capture_layers=...)` hidden-state 捕获挂点）、`blockpath.py`（CSA 块通路：stride-4 压缩器 + 块 KV 收割/注入 + namespace 五元组 fail-closed）、`pmstream.py`（E+-5 PM-stream：mHC 多流残差 arXiv:2512.24880，恒等初始化 <1e-6）、`tri_attention.py`（E+-7 三级注意力栈：滑窗 512 + CSA 选择检索 + HCA 128:1 + NSA 式门控融合 + `inject_hca_entries`）、`kal.py`（E+-3 KAL 分层元认知头：L1 P(IK) W[d,3] + L2 valence/arousal W[d,2]）
+  - `config.py`：ModelConfig dataclass + JSON 读写（含 `pm_stream`/`pm_constrain`/`tri_*`/`tri_use_indexer`/`kernel_*` 开关；**2026-07 起移除 `attn_only`/`attn_impl`，注意力层统一为三级栈**）
+  - `model/`：`gdn.py`（GDN-MemBlock：naive_recurrent + chunked 双路径，纯 PyTorch）、`tri_attention.py`（**TriRetrievalAttention 三级检索注意力**：滑窗 L0 + CSA 选择检索 L1 + HCA 128:1 gist L2 + NSA 式门控融合 + `inject_hca_entries` + 可选 `tri_use_indexer` 独立 LightningIndexer）、`model.py`（`TaisObsidianForCausalLM`，tied embedding，自研 `save_pretrained`/`from_pretrained`；`forward(capture_layers=..., run_kernel=..., inject_payloads=...)` hidden-state 捕获 + 内核挂点）、`blockpath.py`（块通路：BlockCompressor stride-4 压缩器 + 块 KV 收割/注入 + namespace 五元组 fail-closed）、`pmstream.py`（E+-5 PM-stream：mHC 多流残差 arXiv:2512.24880，恒等初始化 <1e-6）、`kal.py`（E+-3 KAL 分层元认知头：L1 P(IK) W[d,3] + L2 valence/arousal W[d,2]）、`tais_kernel.py`（TAIS 内核：聚合 KAL + HRL Indexer + DG + 侧信道头簇，sense/route/inject）、`hrl_indexer.py`（LightningIndexer：DSA 式独立检索打分器）、`memlayer.py`（增强 A 记忆层：product-key KV + GDN-2 erase/write 解耦 delta 写）、`injection.py`（注入闭环）、`dyn_vocab.py`（动态词表 concept_slot）
+  - `runtime/`：运行时服务（`pagetable.py` 页表 SQLite、`blockstore.py` 块存储 usage_weighted、`pager.py` 缺页 fail-closed、`bus.py` Memory Bus、`ca1_gate.py` 巩固门、`ca3_ppr.py` 联想、`state_ckpt.py` GDN 状态持久化、`safety.py` 安全管线）
+  - `sleep/`：`consolidator.py`（睡眠巩固器：分簇回放 + 间隔提取练习 + CA1 门 + SHY 归一化）
   - `data/memmap.py`：uint16 bin shard 读写与 batch 采样；`tokenizer_io.py`：tokenizer 封装
-  - `train.py`：训练循环（bf16 autocast + fp32 参数、AdamW 分组、WSD 调度、grad clip 1.0、checkpoint/resume、tensorboard；config JSON 可加 `pm_stream`/`attn_impl` 开关；**注意：1.5B T1 起按设计文档改 Muon 优化器**）
+  - `train.py`：训练循环（bf16 autocast + fp32 参数、AdamW 分组、WSD 调度、grad clip 1.0、checkpoint/resume、tensorboard；config JSON 可加 `pm_stream`/`tri_*`/`kal_aux_weight` 开关；**注意：1.5B T1 起按设计文档改 Muon 优化器**）
   - `generate.py`：cache 增量生成（temperature/top-k）
-- `configs/`：`pilot_0p1b.json`（hybrid 基线）、`pilot_0p1b_attn.json`（attn_only 孪生）、`pilot_0p1b_pm.json`（PM-stream 消融）、`pilot_0p1b_tri.json`（三级栈消融）、`pilot_0p1b_pmtri.json`（组合）
+- `configs/`：`pilot_0p1b.json`（hybrid 基线）、`pilot_0p1b_pm.json`（PM-stream 消融）、`pilot_0p1b_tri.json`（三级栈消融）、`pilot_0p1b_pmtri.json`（组合）；**`pilot_0p1b_attn.json`（attn_only 孪生）已于 2026-07 移除（对照组废弃）**
 - `scripts/`：`check_env.py`（环境自检）、`prepare_data.py`（FineWeb-Edu → 训 32k BPE → 120M tokens shards）、`smoke_overfit.py` / `smoke_overfit_pm.py` / `smoke_overfit_tri.py`（三变体过拟合冒烟）、`extend_tokenizer.py`（E+-2 特殊 token 扩容，幂等）、`kal_probe.py`（E+-3 KAL 探针管线，输出 `runs/kal_probe/report.json`）
-- `tests/`（25 项 pytest 全绿）：`test_gdn.py`、`test_cache.py`、`test_capture.py`、`test_blockpath.py`（×4）、`test_pmstream.py`（×6）、`test_tri_attention.py`（×7）、`test_kal.py`（×4）、`test_tokenizer_ext.py`
+- `tests/`（**120 项 pytest 全绿**）：`test_gdn.py`、`test_cache.py`、`test_capture.py`、`test_blockpath.py`（×4）、`test_pmstream.py`（×6）、`test_tri_attention.py`（×7）、`test_tri_indexer.py`（×4）、`test_kal.py`（×4）、`test_tokenizer_ext.py`、`test_tais_kernel.py`（×12）、`test_kernel_wiring.py`（×4）、`test_kernel_route_candidates.py`（×5）、`test_hrl.py`（×5）、`test_hrl_init.py`（×5）、`test_gdn2_indexer.py`（×8）、`test_runtime.py`（×21）、`test_injection.py`（×12）、`test_sleep.py`（×7）、`test_dyn_vocab.py`（×5）、`test_safety.py`（×7）
 - 不入库：`data/`（tokenizer + shards）、`checkpoints/`、`runs/`、`logs/`
 - **待建（对齐《接口与实现计划》§1 包结构）**：`model/` 增 `tais_kernel.py`（M1 内核骨架）、`hrl_heads.py`、`memlayer.py`、`injection.py`；新建 `runtime/`（bus/pager/pagetable/blockstore/ca3_ppr/ca1_gate/awakener/**state_ckpt**）与 `sleep/`（consolidator/distill）包。
 
@@ -86,15 +88,16 @@
 ## 5. 开发流程约定
 
 - **M0–M8 里程碑链**（《部件实现详细计划》§IV，每级有退出标准，不达标不进下一级）：
-  - ~~M0 主干可跑~~ ✅（GDN+CSA+滑窗+PM-stream，25 项 tests 全绿 + 消融矩阵）；
-  - M1 内核骨架 → TAISKernel sense/route/inject 空实现，前向不崩、PM 读写通；
-  - M2 KAL 内生 → L1/L2 头+挂点+kal_probe，探针 AUROC≥0.8 @0.1B（预演已达成：ℓ8 0.945）；
-  - M3 HRL 内生 → Indexer+DG+侧信道头簇，块域 KL 收敛、梯度隔离验证；
-  - M4 运行时骨架 → Bus+Pager+页表+BlockStore+state_ckpt，缺页 fail-closed、state 往返 <1e-5；
-  - M5 注入闭环 → KV拼接+记忆层+向量加法，注入后人效不降、热切换 <5ms；
-  - M6 睡眠固化 → 间隔提取练习+CA1门+蒸馏+SHY，回归通过、归一化稳定；
-  - M7 动态词表 → concept_slot+升格 CPT，输入侧提取成功、输出侧限量；
-  - M8 安全管线 → 签名+namespace+扫描器，投毒检出、漂移报警。
+  - ~~M0 主干可跑~~ ✅（GDN-MemBlock+TriRetrievalAttention+PM-stream，25 项 tests 全绿 + 消融矩阵）；
+  - ~~M1 内核骨架~~ ✅（TAISKernel sense/route/inject，前向不崩、PM 读写通，120 项全绿）；
+  - ~~M2 KAL 内生~~ ✅（L1/L2 头+挂点+kal_probe，探针 AUROC 0.945≥0.8 @0.1B ℓ8）；
+  - ~~M3 HRL 内生~~ ✅（Indexer+DG+侧信道头簇+LightningIndexer，梯度隔离验证）；
+  - ~~M4 运行时骨架~~ ✅（Bus+Pager+页表+BlockStore+state_ckpt，缺页 fail-closed、state 往返 <1e-5）；
+  - ~~M5 注入闭环~~ ✅（KV拼接+记忆层+向量加法，注入后人效不降 Δ+0.0001）；
+  - ~~M6 睡眠固化~~ ✅（间隔提取练习+CA1门+SHY，回归通过、归一化稳定）；
+  - ~~M7 动态词表~~ ✅（concept_slot+注册，输入侧提取通路）；
+  - ~~M8 安全管线~~ ✅（签名+namespace+扫描器接口，投毒检出、漂移报警）。
+  - **当前进度**：M0–M8 全部落地（120 项 pytest 全绿）；内核端到端接线 + D-0 烟测 + KAL 内生训练 + GDN-2 解耦 + V4 CSA 独立 indexer 完成。
 - **首要观测（T1）**：① KAL 探针强度（1.5B 未知）；② 内词典提取强度；③ PM-stream n=5 稳定性（0.1B 已通过）；④ 运行时记忆位置∈{HCA前/HCA后/并行}消融（Part Z）。
 - **设计冻结纪律**：Block Spec 是系统的"ISA"——页表、路由器、编译器、缺页处理各自迭代时不得偏离规范；任何里程碑退出标准未达成时，回检设计文档对应章节并修订。
 

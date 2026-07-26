@@ -11,7 +11,6 @@ class ModelConfig:
     """TAIS Obsidian 模型配置（D-0 级 0.1B 先导默认值）。
 
     block_pattern 循环重复至 n_layer；"G"=GDN 层，"A"=CSA 全注意力层。
-    attn_only=True 时全部层替换为注意力层（对照孪生）。
     """
 
     vocab_size: int = 32768
@@ -31,7 +30,6 @@ class ModelConfig:
     mlp_hidden: int = 2048
     rms_eps: float = 1e-6
     max_seq: int = 1024
-    attn_only: bool = False
     # 训练时逐 block 梯度检查点（8GB 显存下 micro_batch=16 的必需项；重算换显存）
     grad_checkpoint: bool = True
     # 构建时是否断言参数量落在 0.1B 区间（tiny 冒烟配置关闭）
@@ -42,15 +40,20 @@ class ModelConfig:
     pm_stream: int = 1
     # Sinkhorn-Knopp 双随机约束开关：True = mHC 原文（默认）；False = 无约束 HC 消融对照
     pm_constrain: bool = True
-    # 三级注意力栈（E+-7，设计文档 §17；实现见 model/tri_attention.py）：
-    # "full" = CSA 全注意力（默认，既有数值路径零改动）；
-    # "tri"  = 滑窗 + CSA 选择检索 + HCA 重压缩三级栈（DeepSeek V4/NSA 谱系）。
-    # 纪律：attn_only=True（对照组）时始终全注意力，本开关不生效。
-    attn_impl: str = "full"
+    # 注意力层 = TriRetrievalAttention（三级检索注意力，DeepSeek V4/NSA 谱系；实现见
+    # model/tri_attention.py）：滑窗 L0 + CSA 选择检索 L1 + HCA gist L2。"A" 层统一用此
+    # （2026-07 起移除旧 RetrievalAttention 占位与 attn_only 对照组，全部走三级栈）。
     tri_window: int = 512      # 滑窗分支窗口（L0 工作记忆，NSA w=512）
     tri_csa_stride: int = 4    # CSA 压缩 stride（L1 情景记忆，V4 m=4）
     tri_csa_topk: int = 128    # CSA indexer top-k（仅因果压缩集合内）
     tri_hca_stride: int = 128  # HCA 重压缩比（L2 gist，V4 m'=128）
+    # TriRetrievalAttention CSA 分支的选择机制（V4 最优组合）：
+    # tri_use_indexer=False = NSA 式（复用压缩注意力分数 Softmax(q·K̃) 选 top-k，默认）；
+    # True = V4 CSA 式独立 LightningIndexer 在压缩条目上打分选 top-k（DeepSeek V4 正式路径，
+    #   与 HRL 的 LightningIndexer 同构共享——设计 §11.1"一个打分器两种检索对象"）。
+    tri_use_indexer: bool = False
+    tri_index_heads: int = 4   # CSA indexer 头数（DSA lightning indexer 式，少头低维）
+    tri_index_dim: int = 32    # CSA indexer 维度（低维，吞吐考虑）
     # TAIS 内核挂点（M1–M8；默认关闭，既有 checkpoint/train/generate 零改动）：
     # kernel_enabled=False = 不构建内核（forward 行为与现状逐行一致）；
     # True = 构建 TAISKernel 并允许 forward(run_kernel=True) 调 sense/inject。
@@ -61,9 +64,7 @@ class ModelConfig:
 
     @property
     def layer_types(self) -> list[str]:
-        """展开后的逐层类型列表，长度为 n_layer。"""
-        if self.attn_only:
-            return ["A"] * self.n_layer
+        """展开后的逐层类型列表，长度为 n_layer（"G"=GDN-MemBlock，"A"=TriRetrievalAttention）。"""
         types = [self.block_pattern[i % len(self.block_pattern)] for i in range(self.n_layer)]
         assert all(t in ("G", "A") for t in types), f"未知层类型: {types}"
         return types

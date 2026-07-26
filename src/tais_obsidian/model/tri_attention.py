@@ -1,13 +1,13 @@
 """三级注意力栈原型（E+-7，设计文档 §17）：滑窗 + CSA 选择检索 + HCA 重压缩 + 学习门控融合。
 
 DeepSeek V4 混合压缩注意力 / NSA（arXiv:2502.11089）谱系的项目化实现，经 config
-``attn_impl="tri"`` 启用（默认 "full" 零改动；``attn_only=True`` 对照组始终全注意力）。
+（2026-07 起为唯一注意力层实现——旧 TriRetrievalAttention 占位与 attn_only 对照组已移除，全部走三级栈）。
 只替换 "A" 层；"G" 层（GDN 无 KV cache）不动。
 
 三分支（与 L0/L1/L2 存储层级一一对应，设计 §17.2）：
 
 - **滑窗分支（L0 精确）**：最近 ``tri_window`` 个 token 的精确注意力（RoPE + GQA，
-  与 FullAttention 同纪律的 masked SDPA）。NSA §3.3.3：独立滑窗分支防止局部模式
+  与 TriRetrievalAttention 同纪律的 masked SDPA）。NSA §3.3.3：独立滑窗分支防止局部模式
   短路压缩/选择分支的学习。
 - **CSA 分支（L1 情景）**：stride-``tri_csa_stride`` 学习压缩器把全量 k/v 压成 T/stride
   条目；importance = 压缩注意力分数（NSA Eq.8：p=Softmax(q·K̃)，**非独立 indexer 模块**；
@@ -46,7 +46,7 @@ plan 要求 init 均等；NSA 原文只说 sigmoid MLP，未给初始化——�
    条目只对 >j 的 query 可见；看不到自己所在块内的其它 token（由滑窗分支补足局部）。
 
 KV cache（生成路径，原型级）：state 存**全量** k/v（[B,T,n_kv,hd] 布局，k 为 k_norm 后、
-**RoPE 前**——与 FullAttention 存 RoPE 后不同，注意勿混用），每步由全量 cache 现算三分支
+**RoPE 前**——与 TriRetrievalAttention 存 RoPE 后不同，注意勿混用），每步由全量 cache 现算三分支
 （O(L)/token，0.1B/seq 1024 可接受）。**生产路径应增量维护压缩/HCA 条目 cache**
 （V4 的 1M 下 10% KV 正由此来；HCA 区 = 滑窗原始 KV + 压缩条目，V4 §3.5.1）；原型的
 现算方式不改变前向数值语义（RoPE 只依赖绝对位置，压缩只依赖完整块内容）。
@@ -101,10 +101,10 @@ class ChunkCompressor(nn.Module):
         return self._comp(k, self.k_z, self.k_pos), self._comp(v, self.v_z, self.v_pos)
 
 
-class TriAttention(nn.Module):
+class TriRetrievalAttention(nn.Module):
     """三级注意力层：滑窗 + CSA 选择检索 + HCA 重压缩，学习门控融合（详见模块 docstring）。
 
-    forward 签名与 FullAttention 一致（x, state, offset）→ (out, new_state)，供 Block 直接替换。
+    forward 签名与 TriRetrievalAttention 一致（x, state, offset）→ (out, new_state)，供 Block 直接替换。
     state = {"k","v"}（[B,T,n_kv,hd]，k 为 k_norm 后 RoPE **前**）+ 可选 HCA 注入区
     （"hca_inj_k"/"hca_inj_v"，[B,n_kv,N,hd]）。
     aux：测试/仪表挂点——传入 dict 时填入分支输出/门控/选择掩码/参考用张量（默认 None 零开销）。
@@ -131,11 +131,23 @@ class TriAttention(nn.Module):
         # 偏离 NSA §3.3.3 的分支独立 k/v（plan 显式指定共享：参数更省、单一 KV cache）
         self.csa_comp = ChunkCompressor(self.head_dim, cfg.tri_csa_stride)
         self.hca_comp = ChunkCompressor(self.head_dim, cfg.tri_hca_stride)
+        # CSA 分支选择机制（V4 最优组合，tri_use_indexer=True 时启用）：
+        # 独立 LightningIndexer 在压缩条目上打分选 top-k（DeepSeek V4 CSA 正式路径，
+        # 与 HRL 的 model/hrl_indexer.py LightningIndexer 同构共享——设计 §11.1
+        # "一个打分器两种检索对象"）。默认 False=NSA 式复用压缩注意力分数（数值兼容）。
+        self.use_indexer = cfg.tri_use_indexer
+        if self.use_indexer:
+            from .hrl_indexer import LightningIndexer
+            # indexer 作用在 q_nope（[B,n_q,T,D]）× 压缩条目 kc（[B,n_kv,S,D]）：
+            # 按 kv 头共享一个 indexer（V4 单序列 MQA 式条目；query 侧多头、key 侧共享）。
+            self.csa_indexer = LightningIndexer(
+                d_model=self.head_dim, n_heads=cfg.tri_index_heads, d_index=cfg.tri_index_dim
+            )
         # 门控（NSA Eq.5 sigmoid 形式，自 q 产生，per-head per-branch；裸 Parameter 实现，
         # 避免被 model._init_weights 的 nn.Linear 规则覆盖 → init 精确均等 1/3，记录见 docstring）
         self.gate_w = nn.Parameter(torch.zeros(3, self.head_dim))
         self.gate_b = nn.Parameter(torch.full((3,), -math.log(2.0)))  # sigmoid(-ln2) = 1/3
-        # RoPE 缓存 [max_seq, head_dim/2]（与 FullAttention 同一构造，half-split NeoX 风格）
+        # RoPE 缓存 [max_seq, head_dim/2]（与 TriRetrievalAttention 同一构造，half-split NeoX 风格）
         inv_freq = 1.0 / (cfg.rope_theta ** (torch.arange(0, self.head_dim, 2).float() / self.head_dim))
         t = torch.arange(cfg.max_seq).float()
         freqs = torch.outer(t, inv_freq)
@@ -145,7 +157,7 @@ class TriAttention(nn.Module):
         self.layer_idx: int = -1
 
     def _rope(self, x: torch.Tensor, offset: int) -> torch.Tensor:
-        # x: [B, T, H, D]，half-split（NeoX 风格）旋转（与 FullAttention._rope 同一实现）
+        # x: [B, T, H, D]，half-split（NeoX 风格）旋转（与 TriRetrievalAttention._rope 同一实现）
         T = x.shape[1]
         cos = self.rope_cos[offset : offset + T]  # [T, D/2]
         sin = self.rope_sin[offset : offset + T]
@@ -241,7 +253,7 @@ class TriAttention(nn.Module):
         k_nope = k.transpose(1, 2)
         v = v.transpose(1, 2)
         rep = self.n_q // self.n_kv
-        # 绝对位置：query 右对齐（Tk-T..Tk-1），key 0..Tk-1（与 FullAttention cache 语义一致）
+        # 绝对位置：query 右对齐（Tk-T..Tk-1），key 0..Tk-1（与 TriRetrievalAttention cache 语义一致）
         i_abs = torch.arange(Tk - T, Tk, device=x.device)
         j_abs = torch.arange(Tk, device=x.device)
 
@@ -263,9 +275,22 @@ class TriAttention(nn.Module):
             kc_e = kc.repeat_interleave(rep, dim=1)
             vc_e = vc.repeat_interleave(rep, dim=1)
             logits = (q_nope @ kc_e.transpose(-1, -2)) / math.sqrt(D)  # [B, n_q, T, S]
-            # 重要性分数 = 压缩注意力分数（NSA Eq.8），GQA 组内头求和共享选择（NSA Eq.10）
-            p = self._masked_softmax(logits, vis[None, None].expand(B, self.n_q, T, S))
-            imp = p.view(B, self.n_kv, rep, T, S).sum(dim=2)  # [B, n_kv, T, S]
+            if self.use_indexer:
+                # V4 CSA 式：独立 LightningIndexer 在压缩条目上打分选 top-k（正式路径）。
+                # indexer 打分 query=q_nope([B,n_q,T,D]→按 kv 头取代表)× 压缩条目 kc([B,n_kv,S,D])，
+                # 得 [B,n_q,T,S]；GQA 组内头求和共享选择（与 NSA Eq.10 同纪律），照 DSA/V4 原文。
+                # indexer 输入按 kv 头分组：把 q_nope 的 rep 个 q 头求和到 kv 头（共享选择）。
+                q_g = q_nope.view(B, self.n_kv, rep, T, self.head_dim).sum(dim=2)  # [B,n_kv,T,D]
+                idx_scores = []
+                for h in range(self.n_kv):
+                    # LightningIndexer(x_q [B,T,D], x_k [B,S,D]) → [B,T,S]
+                    s_h = self.csa_indexer(q_g[:, h], kc[:, h])  # [B,T,S]
+                    idx_scores.append(s_h)
+                imp = torch.stack(idx_scores, dim=1)  # [B,n_kv,T,S]
+            else:
+                # NSA 式（默认）：重要性分数 = 压缩注意力分数（NSA Eq.8），GQA 组内头求和共享选择
+                p = self._masked_softmax(logits, vis[None, None].expand(B, self.n_q, T, S))
+                imp = p.view(B, self.n_kv, rep, T, S).sum(dim=2)  # [B, n_kv, T, S]
             # top-k 仅因果集合内；选择离散无梯度（NSA 式：分数随压缩注意力训练，照抄不自创）
             k_eff = min(self.topk, S)
             topv, topi = imp.masked_fill(~vis[None, None], -torch.finfo(imp.dtype).max).topk(k_eff, dim=-1)
