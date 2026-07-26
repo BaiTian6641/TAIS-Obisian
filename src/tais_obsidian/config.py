@@ -46,11 +46,18 @@ class ModelConfig:
     # "full" = CSA 全注意力（默认，既有数值路径零改动）；
     # "tri"  = 滑窗 + CSA 选择检索 + HCA 重压缩三级栈（DeepSeek V4/NSA 谱系）。
     # 纪律：attn_only=True（对照组）时始终全注意力，本开关不生效。
-    attn_impl: str = "full"
+    attn_impl: str = "tri"
     tri_window: int = 512      # 滑窗分支窗口（L0 工作记忆，NSA w=512）
     tri_csa_stride: int = 4    # CSA 压缩 stride（L1 情景记忆，V4 m=4）
     tri_csa_topk: int = 128    # CSA indexer top-k（仅因果压缩集合内）
     tri_hca_stride: int = 128  # HCA 重压缩比（L2 gist，V4 m'=128）
+    # TAIS 内核挂点（M1–M8；默认关闭，既有 checkpoint/train/generate 零改动）：
+    # kernel_enabled=False = 不构建内核（forward 行为与现状逐行一致）；
+    # True = 构建 TAISKernel 并允许 forward(run_kernel=True) 调 sense/inject。
+    kernel_enabled: bool = False
+    kernel_dg_dim: int = 256   # DG 投影维度
+    kernel_dg_topk: int = 32   # DG 稀疏 key top-k
+    kernel_sense_layers: list[int] = field(default_factory=list)  # sense 读点层（空=全部 GDN 层）
 
     @property
     def layer_types(self) -> list[str]:

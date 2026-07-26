@@ -18,6 +18,7 @@ from .attention import CSAAttention
 from .common import RMSNorm
 from .gdn import GDNBlock
 from .pmstream import PMStreamMix
+from .tais_kernel import TAISKernel
 from .tri_attention import TriAttention
 
 
@@ -114,6 +115,19 @@ class TaisObsidianForCausalLM(nn.Module):
         print(f"[model] 参数量 {n_params/1e6:.2f}M（tied embedding；层型 {''.join(cfg.layer_types)}）")
         if cfg.check_0p1b_params:
             assert 90e6 <= n_params <= 130e6, f"参数量 {n_params/1e6:.1f}M 不在 90–130M 区间"
+        # TAIS 内核挂点（M1–M8；默认关闭，forward 行为零改动）
+        self.kernel: TAISKernel | None = None
+        if cfg.kernel_enabled:
+            self.attach_kernel()
+
+    def attach_kernel(self) -> None:
+        """挂载 TAIS 内核（聚合 KAL/HRL 内生头，随 state_dict 存取）。
+
+        内核权重进 self.kernel（nn.Module 子模块），save_pretrained/from_pretrained
+        自动随 state_dict 存取（无需特殊处理）。重复调用安全（幂等）。
+        """
+        cfg = self.config
+        self.kernel = TAISKernel(cfg.d_model, dg_dim=cfg.kernel_dg_dim, dg_topk=cfg.kernel_dg_topk)
 
     @staticmethod
     def _init_weights(m: nn.Module) -> None:
@@ -127,56 +141,72 @@ class TaisObsidianForCausalLM(nn.Module):
         input_ids: torch.Tensor,
         cache: dict | None = None,
         capture_layers: list[int] | None = None,
+        run_kernel: bool = False,
+        injector=None,
+        inject_payloads: dict[int, list] | None = None,
     ) -> tuple[torch.Tensor, dict] | tuple[torch.Tensor, dict, dict[int, torch.Tensor]]:
         """input_ids [B,T] → (logits [B,T,V], new_cache)；指定 capture_layers 时追加返回 captures。
 
-        cache = {"pos": int, "layers": [各层 state]}，用于推理时增量生成。
-        capture_layers：hidden-state 捕获挂点（KAL 探针/机制分析用，纯仪表件，只读不改前向数值）。
-            传入层索引列表时返回三元组，captures = {layer_idx: 该 Block 输出处（mlp 残差之后）
-            的残差流张量 [B,T,d_model]}（增量路径下 T=1）；为 None 时严格返回二元组（默认行为不变）。
-            捕获张量与残差流共享存储、不 detach；grad checkpoint 路径下捕获的是 checkpoint
-            返回的 Block 真实输出（重算仅发生在反向且数值相同），与普通路径一致。
-            注意：捕获会延长激活/计算图存活时间，训练循环不要使用（避免显存驻留），
-            探针捕获请在 eval + no_grad 下进行。
-            pm_stream>1（mHC 多流）时捕获语义扩展为 dict：
-            captures[i] = {"content": 内容流 0 [B,T,d]（与单流捕获同语义）,
-                           "pm": PM-stream（末位流）[B,T,d]}（设计文档 §13.4 的 KAL 读点）。
+        run_kernel=True（且 kernel 已挂载）时，在 forward 中调 TAIS 内核：
+        - sense：在每个 sense 读点层（config.kernel_sense_layers；空=全部 GDN 层）后，
+          对该层输出 PM-stream（pm_stream>1）或内容流（单流）调 kernel.sense()——**监测只读**；
+        - inject：在 CSA 层前，对该层输入残差前 PM-stream 调 kernel.inject(payloads, injector)
+          ——**执行写入**（监测/执行分置：sense 读 GDN 层，inject 写 CSA 层，不同层）。
+          inject_payloads = {layer_idx: [BlockPayload, ...]}。
+        返回的 kernel_signals 追加到 captures["__kernel__"]（dict per layer）。
+        默认 run_kernel=False：forward 行为与现状逐行一致（94 项基线测试零改动）。
         """
         offset = 0 if cache is None else cache["pos"]
         layer_states = [None] * len(self.layers) if cache is None else cache["layers"]
         capture_set = None if capture_layers is None else set(capture_layers)
         captures: dict[int, torch.Tensor] = {}
+        kernel_signals: dict[int, dict] = {}
+        sense_layers = set(self.config.kernel_sense_layers) if self.config.kernel_sense_layers else None
         x = self.embed(input_ids)
         new_states = []
+        use_kernel = run_kernel and self.kernel is not None
         if self.config.pm_stream > 1:
             # mHC 多流路径（pmstream.py）：流初始化 = 嵌入复制 n 份（HC §2.1，恒等初始化）
             n = self.config.pm_stream
             S = x.unsqueeze(2).expand(x.shape[0], x.shape[1], n, x.shape[2])
             for i, (layer, st) in enumerate(zip(self.layers, layer_states)):
+                # 执行写入（CSA 残差前 PM-stream）：在该 CSA 层前注入
+                if use_kernel and layer.type == "A" and inject_payloads and i in inject_payloads:
+                    pm_pre = S[:, :, -1, :]
+                    S = S.clone()
+                    S[:, :, -1, :] = self.kernel.inject(
+                        pm_pre, inject_payloads[i], injector=injector
+                    )
                 if self.config.grad_checkpoint and self.training and torch.is_grad_enabled():
-                    # 梯度检查点：流状态不保留，反向时重算（与单流路径同一纪律）
                     S, nst = torch.utils.checkpoint.checkpoint(layer, S, st, offset, use_reentrant=False)
                 else:
                     S, nst = layer(S, st, offset)
                 new_states.append(nst)
                 if capture_set is not None and i in capture_set:
                     captures[i] = {"content": S[:, :, 0, :], "pm": S[:, :, -1, :]}
-            # 输出聚合：流均值（非 HC 的求和——RMSNorm eps 破坏尺度不变性，见 pmstream.py）
+                # 监测只读（GDN 输出 PM-stream）：在该 GDN 层后感知
+                if use_kernel and (sense_layers is None or i in sense_layers) and layer.type == "G":
+                    kernel_signals[i] = {"sense": self.kernel.sense(S[:, :, -1, :])}
             x = S.mean(dim=2)
         else:
             for i, (layer, st) in enumerate(zip(self.layers, layer_states)):
+                if use_kernel and layer.type == "A" and inject_payloads and i in inject_payloads:
+                    x = self.kernel.inject(x, inject_payloads[i], injector=injector)
                 if self.config.grad_checkpoint and self.training and torch.is_grad_enabled():
-                    # 梯度检查点：激活不保留，反向时重算（训练省显存）
                     x, nst = torch.utils.checkpoint.checkpoint(layer, x, st, offset, use_reentrant=False)
                 else:
                     x, nst = layer(x, st, offset)
                 new_states.append(nst)
                 if capture_set is not None and i in capture_set:
                     captures[i] = x
+                if use_kernel and (sense_layers is None or i in sense_layers) and layer.type == "G":
+                    kernel_signals[i] = {"sense": self.kernel.sense(x)}
         x = self.norm_f(x)
         logits = F.linear(x, self.embed.weight)  # tied lm_head
         new_cache = {"pos": offset + input_ids.shape[1], "layers": new_states}
-        if capture_set is None:
+        if kernel_signals:
+            captures["__kernel__"] = kernel_signals
+        if capture_set is None and not kernel_signals:
             return logits, new_cache
         return logits, new_cache, captures
 
