@@ -46,7 +46,7 @@ class ModelConfig:
     # "full" = CSA 全注意力（默认，既有数值路径零改动）；
     # "tri"  = 滑窗 + CSA 选择检索 + HCA 重压缩三级栈（DeepSeek V4/NSA 谱系）。
     # 纪律：attn_only=True（对照组）时始终全注意力，本开关不生效。
-    attn_impl: str = "tri"
+    attn_impl: str = "full"
     tri_window: int = 512      # 滑窗分支窗口（L0 工作记忆，NSA w=512）
     tri_csa_stride: int = 4    # CSA 压缩 stride（L1 情景记忆，V4 m=4）
     tri_csa_topk: int = 128    # CSA indexer top-k（仅因果压缩集合内）
