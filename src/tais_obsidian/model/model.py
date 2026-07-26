@@ -18,6 +18,7 @@ from .attention import CSAAttention
 from .common import RMSNorm
 from .gdn import GDNBlock
 from .pmstream import PMStreamMix
+from .tri_attention import TriAttention
 
 
 class SwiGLU(nn.Module):
@@ -43,7 +44,13 @@ class Block(nn.Module):
         self.type = layer_type
         self.pm_stream = cfg.pm_stream
         self.norm1 = RMSNorm(cfg.d_model, cfg.rms_eps)
-        self.mixer = GDNBlock(cfg) if layer_type == "G" else CSAAttention(cfg)
+        if layer_type == "G":
+            self.mixer = GDNBlock(cfg)
+        elif cfg.attn_impl == "tri" and not cfg.attn_only:
+            # 三级注意力栈（E+-7）：attn_only=True 对照组始终全注意力（plan 纪律）
+            self.mixer = TriAttention(cfg)
+        else:
+            self.mixer = CSAAttention(cfg)
         self.norm2 = RMSNorm(cfg.d_model, cfg.rms_eps)
         self.mlp = SwiGLU(cfg.d_model, cfg.mlp_hidden)
         if cfg.pm_stream > 1:
@@ -92,6 +99,10 @@ class TaisObsidianForCausalLM(nn.Module):
         self.embed = nn.Embedding(cfg.vocab_size, cfg.d_model)
         self.layers = nn.ModuleList([Block(cfg, t) for t in cfg.layer_types])
         self.norm_f = RMSNorm(cfg.d_model, cfg.rms_eps)
+        # 三级栈层号写入（inject_hca_entries 的 namespace 五元组校验用）
+        for i, layer in enumerate(self.layers):
+            if isinstance(layer.mixer, TriAttention):
+                layer.mixer.layer_idx = i
         # lm_head 与 embed 共享权重（tied）
         self.apply(self._init_weights)
         # 残差分支输出投影缩小初始化（GPT-2 惯例）

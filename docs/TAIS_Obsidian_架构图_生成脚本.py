@@ -101,10 +101,10 @@ def plus(x, y, r, fc):
 ax.add_patch(Rectangle((0, 143.5), 100, 6.5, fc=INK, ec="none"))
 ax.text(3, 147.6, "TAIS Obsidian 1.5B", fontsize=22, color="white",
         fontweight="bold", va="center")
-ax.text(3, 145.2, "tais-obsidian ｜ 知识感知 × 海马记忆 × 视觉空间 × 原生 1M ｜ Reasoning-native ｜ 增强A/B/C/E（v1.2）",
+ax.text(3, 145.2, "tais-obsidian ｜ 知识感知 × 海马记忆 × 视觉空间 × 原生 1M ｜ Reasoning-native ｜ 增强A–F（v1.3）",
         fontsize=10, color=GRAY4, va="center")
-ax.text(97, 147.6, "v0.7", fontsize=12, color=GRAY4, va="center", ha="right")
-ax.text(97, 145.2, "2026-07-24", fontsize=9, color=GRAY4, va="center", ha="right")
+ax.text(97, 147.6, "v0.8", fontsize=12, color=GRAY4, va="center", ha="right")
+ax.text(97, 145.2, "2026-07-25", fontsize=9, color=GRAY4, va="center", ha="right")
 
 # ================= 左侧主栈 =================
 MX, MW = 4, 23; cx = MX + MW / 2
@@ -145,7 +145,7 @@ arr(cx, 48.4, cx, 49.6)
 plus(cx, 50.6, 1.2, INK)
 plus(MX + MW - 4, 50.6, 1.0, PURPLE)
 note(MX + MW - 2.8, 52.3, "注入点", fs=7, color=PURPLE)
-note(6.5, 55, "⋮ 第 2、3 层同构", fs=8, color=GRAY6)
+note(6.5, 55, "（第 2、3 层同构）", fs=8, color=GRAY6)
 ax.add_patch(Circle((MX + 0.8, 60), 0.55, fc=PURPLE, ec="white", lw=1.2, zorder=6))
 note(MX + 2.0, 61.2, "KAL 探针挂载 ℓ10/14/18", fs=7, color=PURPLE)
 note(6.5, 65.5, "侧信道头簇（读 PM-stream）", fs=7, color=PURPLE, bold=True)
@@ -153,23 +153,26 @@ note(6.5, 63.7, "ℓ8 预取｜ℓ14 写显著(+arousal)·冲突｜ℓ18 归因�
      fs=6.3, color=PURPLE)
 note(6.5, 68.5, "增强A：旁挂稀疏KV可写记忆层（delta rule 写入）",
      fs=6.8, color=TEAL, bold=True)
-note(6, 73, "⇄ CSA 原生块通路：导出=harvest 压缩KV｜注入=拼接（增强B）",
+note(6, 73, "CSA 原生块通路（双向）：导出=harvest 压缩KV｜注入=拼接（增强B）",
      fs=6.8, color=TEAL, bold=True)
 
-# 1× CSA-AttnBlock
-panel(5.2, 74, 21, 29, "1 × CSA-AttnBlock", ORANGE, tag_bottom=True)
+# 1× CSA-AttnBlock（V4 混合压缩注意力三级 = 三级记忆，增强F §17）
+panel(5.2, 74, 21, 29, "1 × CSA-AttnBlock（V4 混合压缩）", ORANGE, tag_bottom=True)
 cbox(MX, 76, MW - 2.5, 3.2, "RMSNorm", INK, fs=9)
 arr(cx, 79.2, cx, 80.4)
-cbox(MX + 1.2, 80.4, MW - 5, 7, "CSA（DeepSeek V4 式）", ORANGE, fc=ORANGE_T, fs=9,
-     sub="stride-4 压缩 + indexer top-128 + 滑窗 512")
+cbox(MX + 1.2, 80.4, MW - 5, 7, "混合压缩注意力（V4 三级）", ORANGE, fc=ORANGE_T, fs=9,
+     sub="滑窗·CSA·HCA = L0/L1/L2 记忆")
 arr(cx, 87.4, cx, 88.6)
 plus(cx, 89.6, 1.2, ORANGE)
 arr(cx, 90.8, cx, 92)
 cbox(MX, 92, MW - 2.5, 3.2, "RMSNorm", INK, fs=9)
 arr(cx, 95.2, cx, 96.4)
-cbox(MX + 1.2, 96.4, MW - 5, 5, "FFN / MoE", INK, fc=GRAY0, fs=9)
+cbox(MX + 1.2, 96.4, MW - 5, 5, "FFN / MoE（三维统一路由）", INK, fc=GRAY0, fs=8.5,
+     sub="token域/块域/专家域 同构打分头")
 arr(cx, 101.4, cx, 102.6)
 plus(cx, 103.6, 1.2, INK)
+note(6, 105.5, "HCA 区 = 块注入原生落点（消前缀偏差）｜ HCA=<|gist|>架构版 ｜ sinks=诚实降级",
+     fs=6.3, color=ORANGE, bold=True)
 note(6, 108, "默认 Reasoning（CoT）｜ 推理中发 <|recall|>/<|gist|>",
      fs=7, color=INK, bold=True)
 

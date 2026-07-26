@@ -42,6 +42,15 @@ class ModelConfig:
     pm_stream: int = 1
     # Sinkhorn-Knopp 双随机约束开关：True = mHC 原文（默认）；False = 无约束 HC 消融对照
     pm_constrain: bool = True
+    # 三级注意力栈（E+-7，设计文档 §17；实现见 model/tri_attention.py）：
+    # "full" = CSA 全注意力（默认，既有数值路径零改动）；
+    # "tri"  = 滑窗 + CSA 选择检索 + HCA 重压缩三级栈（DeepSeek V4/NSA 谱系）。
+    # 纪律：attn_only=True（对照组）时始终全注意力，本开关不生效。
+    attn_impl: str = "full"
+    tri_window: int = 512      # 滑窗分支窗口（L0 工作记忆，NSA w=512）
+    tri_csa_stride: int = 4    # CSA 压缩 stride（L1 情景记忆，V4 m=4）
+    tri_csa_topk: int = 128    # CSA indexer top-k（仅因果压缩集合内）
+    tri_hca_stride: int = 128  # HCA 重压缩比（L2 gist，V4 m'=128）
 
     @property
     def layer_types(self) -> list[str]:

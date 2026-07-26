@@ -153,10 +153,16 @@ def main() -> None:
     torch.backends.cudnn.allow_tf32 = True
 
     # pm_stream/pm_constrain 缺省 = 1/True（单流基线零改动）；PM 消融在 config JSON 中加 "pm_stream": 5
+    # attn_impl 缺省 = "full"（全注意力基线零改动）；三级栈消融在 config JSON 中加 "attn_impl": "tri"
     model_cfg = ModelConfig(
         attn_only=cfg["attn_only"],
         pm_stream=cfg.get("pm_stream", 1),
         pm_constrain=cfg.get("pm_constrain", True),
+        attn_impl=cfg.get("attn_impl", "full"),
+        tri_window=cfg.get("tri_window", 512),
+        tri_csa_stride=cfg.get("tri_csa_stride", 4),
+        tri_csa_topk=cfg.get("tri_csa_topk", 128),
+        tri_hca_stride=cfg.get("tri_hca_stride", 128),
     )
     model = TaisObsidianForCausalLM(model_cfg).to(device)
     opt = build_optimizer(model, cfg)

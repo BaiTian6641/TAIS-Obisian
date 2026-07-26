@@ -1,6 +1,6 @@
 # 从零构建 TAIS Obsidian：总体实施计划
 
-> **版本**：v0.3（2026-07-24。v0.2：§6.1 D-0 级 0.1B 先导实验落地；**v0.3：① 工作站到位——RTX PRO 4000 Blackwell SFF（24GB，sm_120）+ RTX 4070 双卡，§1 全部重测重写，硬件能力重估；② D-0 迁移工作站重启，新增 §6.6 逐步执行方案（S0 环境→S1 数据→S2 pilot+孪生）；③ 新增 §7.5 阶段 E+——设计文档 v0.7–v0.9 原生部件（KAL/PM-stream/CSA 块通路/HRL 头簇）的 0.1B 原型序列；④ 新增 §8A EXP-PERSONA 极其实验性目标：人格块可读写 + KAL 道德约束块（MCB），受控触探 DKB-MS §14.4 红线；⑤ 风险登记册与立即行动清单重写**）
+> **版本**：v0.4（2026-07-25。v0.2：§6.1 D-0 先导落地；v0.3：工作站到位 + §6.6 S0–S2 + §7.5 阶段 E+ + §8A EXP-PERSONA；**v0.4：① S0–S2 执行完毕，D-0 报告归档，S2 退出判定通过；② E+-1/2/4/5 原型落地（E+-5 消融运行中）；③ 对齐设计文档 v1.0–v1.3——E+ 表更新：E+-3 改 KAL 分层（L1 P(IK)+L2 情感）、新增 E+-7 三级注意力栈原型（滑窗+CSA+HCA，骨干级）、E+-8 增强 A 记忆层（低优先）；F-0 配方冻结纳入三级栈与 PM 判定；Block Spec v0.2 补 affect 字段与三载体 kind**）
 > **定位**：本文档回答"如何从零构建、训练并推理我们自己的框架"这一总问题，是连接三部设计文档（What & Why）与落地代码（How）的**总实施计划**。阶段 G/H 与《DKB-MS_实施规划与路线图.md》v0.1 的 Phase 0–4 对接，不重复展开。
 > **素材来源**：本文档的事实性内容（显存公式、超参、工具能力边界）来自 2026-07-24 的联网调研与本机实测，来源在文中以 arXiv 编号或 URL 标注；"已有研究证据"与"本项目独创设想"严格区分，独创设想以【设想】标注。
 
@@ -291,16 +291,18 @@ flowchart LR
 
 ### 7.5 阶段 E+：原生部件 0.1B 原型序列（v0.3 新增，对齐设计文档 v0.7–v0.9）
 
-> 设计文档 v0.7–v0.9 新增的 CSA 原生块通路、HRL 侧信道头簇、mHC PM-stream、Reasoning-native 特殊 token，全部以 **0.1B 最小成本机制原型**先行落地——只验证"机制能跑通、结构不伤基线"，不追求能力指标（效力验证在 9B 底座/1.5B 上）。依赖顺序：E+-1 是万恶之源先行；E+-5 独立消融分支；E+-6 依赖 E+-5。
+> 设计文档 v0.7–v1.3 新增/修订的 CSA 原生块通路、HRL 侧信道头簇、mHC PM-stream、Reasoning-native 特殊 token、**三级注意力栈（滑窗+CSA+HCA，v1.3 骨干级变化）**、KAL 分层（L1 知识 + L2 情感，v1.2）、增强 A 可写记忆层（v1.1），全部以 **0.1B 最小成本机制原型**先行落地——只验证"机制能跑通、结构不伤基线"，不追求能力指标（效力验证在 9B 底座/1.5B 上）。依赖顺序：E+-1 是万恶之源先行；E+-5 独立消融分支；E+-6 依赖 E+-5；**E+-7（三级栈）与 E+-5 并列为骨干消融，达标才进 1.5B config**；E+-8 低优先，随时可插。
 
 | # | 原型 | 内容 | 设计依据 | 退出标准 |
 |---|---|---|---|---|
 | E+-1 | KAL 探针挂点 | 模型 forward 暴露逐层 hidden state 捕获 API（自研 hooks，不依赖 transformers；G/A 两型层分别验证） | 设计 §6/§8.4；路线图 Phase 0 退出标准的自有框架版 | ✅ **2026-07-24 已落地**：`forward(capture_layers=...)` 可选参数（默认二元组行为不变；checkpoint/增量两路径与 hook 参考逐点一致 0.0 diff）+ `tests/test_capture.py` |
 | E+-2 | 特殊 token 扩容 | `<|recall|>`/`<|blank|>`/`<|gist|>`（+远期 `<|ref|>`/`<|box|>`）的词表落地方案 | 设计 §6/§13.2 Reasoning-native | ✅ **已实现（2026-07-24，S2 后解冻）**：`scripts/extend_tokenizer.py` 幂等扩容（id 32768–32772，vocab 32773，原文件备份 tokenizer.v32768.bak.json）+ `tests/test_tokenizer_ext.py`（既有 id 与备份逐点回归）；决策不变——**`ModelConfig.vocab_size` 默认仍 32768**，32776（8 倍数）仅在显式配置启用（E+-3 起），1.5B 正式词表 F-0 统一重训 |
-| E+-3 | KAL 三态头 + P(IK) 辅助目标（原型） | ℓ中层挂 W[d,3] 头；用"已知/未知"迷你数据集（路线图 Phase 1 协议的 0.1B 版）训探针 | 设计 §8.3-1（arXiv:2207.05221）；**T1 首要观测的预演** | 管线跑通；AUROC 数字归档（0.1B 预期信号弱——弱本身即有效信息，不阻塞） |
-| E+-4 | CSA 块通路原型 | CSA 层 stride-4 学习压缩器最小实现 + 压缩 KV 收割/导出 + 注入（namespace 五元组校验 + fail-closed 回退重算） | 设计 §11.1（v0.7） | ✅ **2026-07-24 机制原型已落地**：`model/blockpath.py`（CSACompressor/harvest/inject + NamespaceMismatchError fail-closed + offset 簿记）+ `tests/test_blockpath.py` 4 项；压缩器权重训练、APE 偏差矫正、块边界标记留 E+ 训练阶段 |
-| E+-5 | PM-stream（mHC n=5）消融 | 残差流 1→5 流（4 内容 + 1 感知-记忆流），双随机约束；同配置短训消融 vs 基线 | 设计 §12.2/§13.4（arXiv:2512.24880）；**最大结构改动，放独立分支** | **实现已落地（2026-07-24）**：`model/pmstream.py`（Sinkhorn t_max=20 + PMStreamMix，Eq.3/7/8/9 逐条引用）+ `pm_stream`/`pm_constrain` config 开关（默认关，基线零改动）；恒等初始化 7.3e-7、约束开 Amax 1.000 vs 无约束 3.696、13 项测试全绿；GLM5.2 交叉验证 plan 见《AGENT_PLAN_E+-5_PM-stream.md》。**消融运行中**：111.21M 参数（+3.0%），3.2k tok/s（fp64 应用端 + Sinkhorn 开销，ETA ~11h），对照基线 val 3.768 |
+| E+-3 | KAL 分层元认知（v1.2 规格）：L1 三态头 + L2 情感头 | ℓ中层挂 W[d,3]（P(IK)）+ W[d,2]（valence/arousal），共享 PM-stream 读点与训练管线；"已知/未知"迷你数据集（路线图 Phase 1 协议 0.1B 版）；**情感 ground truth 外部 bootstrap（用户反馈/文本分类器），防自指循环（设计 §16.1）** | 设计 §8.3-1（arXiv:2207.05221）+ §16.2（v1.2）；**T1 首要观测的预演** | ✅ **完成（2026-07-25）**：`model/kal.py`（KALHead，三态规格保留、探针退化二分类已注明）+ `scripts/kal_probe.py` + `runs/kal_probe/report.json`。**实测（pilot hybrid checkpoint，ℓ4/ℓ8）**：L1 overall AUROC 0.885/**0.945**，fake 语义空白子集 0.959/**0.979** vs FLARE 基线 0.938/0.858——**探针在 P(IK) 最相关的语义空白上显著优于输出分布基线（Phase 1 正式标准在 fake 子集达成）**；shuffled 子集基线满分探针弱（互补分工，与 SAPLMA/FLARE 文献定性一致）；L2 情感头弱但高于随机（valence AUROC 0.652，0.1B 预期内）。局限如实记录：模板伪事实或高估、无"不确定"标签源。读点读内容流，PM 读点切换留 PM 模型定稿后 |
+| E+-4 | CSA 块通路原型 | CSA 层 stride-4 学习压缩器最小实现 + 压缩 KV 收割/导出 + 注入（namespace 五元组校验 + fail-closed 回退重算） | 设计 §11.1（v0.7） | ✅ **2026-07-24 机制原型已落地**：`model/blockpath.py`（CSACompressor/harvest/inject + NamespaceMismatchError fail-closed + offset 簿记）+ `tests/test_blockpath.py` 4 项；压缩器权重训练、APE 偏差矫正、块边界标记留 E+ 训练阶段。**v1.3 演进方向：harvest() 双编译目标（CSA KV / HCA 条目，§15.3/§17.3），注入原生落点移 HCA 区——随 E+-7 一并落地** |
+| E+-5 | PM-stream（mHC n=5）消融 | 残差流 1→5 流（4 内容 + 1 感知-记忆流），双随机约束；同配置短训消融 vs 基线 | 设计 §12.2/§13.4/§17.4（arXiv:2512.24880）；**最大结构改动，放独立分支** | ✅ **判定达标（2026-07-25）**：`model/pmstream.py`（Sinkhorn t_max=20 + PMStreamMix，Eq.3/7/8/9 逐条引用）+ config 开关（默认关，基线零改动）；恒等初始化 7.3e-7、约束开 Amax 1.000 vs 无约束 3.696；GLM5.2 交叉验证 plan 见《AGENT_PLAN_E+-5_PM-stream.md》。**消融 2000 步收官：val 3.744 vs 基线 3.768（−0.024 nats，全部 5 个评估点一致领先 −0.025~−0.044），gnorm 0.23–0.39 无 spike；参数 +3.0%；训练吞吐 3.0k tok/s（fp64 应用端 + Sinkhorn 开销，1.5B 前需优化：fp32 应用端/迭代数/kernel 融合——已登记）**。PM-stream 进入 1.5B config 候选；感知信号深层传播的探针验证随 E+-3 进行 |
 | E+-6 | HRL 侧信道头簇 | 五个微头（预取/写显著性/冲突检测/归因监测/联想触发）挂 PM-stream，KL-warmup 管线 | 设计 §11.2（v0.7）；依赖 E+-5 | 头参数量 <1%；warmup 管线跑通（行为训练留 T3） |
+| E+-7 | **三级注意力栈原型（v1.3 骨干级）** | 现 CSAAttention（全注意力占位）→ NSA/V4 式三分支：**滑窗 512（L0 精确）+ CSA stride-4 压缩 + indexer top-128 选择检索（L1 情景）+ HCA 128:1 重压缩（L2 gist/块注入原生落点）**，学习门控融合；HCA harvest() 自编译接口（双编译目标之一） | 设计 §17（v1.3）；NSA（arXiv:2502.11089）；我们的 CSA 与 DeepSeek CSA 独立命名收敛 | ✅ **判定达标（2026-07-25）**：`model/tri_attention.py`（V4 式池化压缩器×2、NSA Eq.5 门控、`inject_hca_entries` fail-closed 不占 token 位）+ `attn_impl="tri"` 开关（默认关）+ 21 项测试（因果性 fp32 逐点 0.0）+ GLM5.2 plan《AGENT_PLAN_E+-7_三级注意力栈.md》。**消融 2000 步收官：val 3.762 vs 基线 3.768（全部 5 个评估点一致不劣且微优 −0.005~−0.007），gnorm 无 spike；参数 +0.093%；吞吐 8.6k tok/s（基线 91%），显存持平**。进入 1.5B config 候选；seq 1024 下 KV 优势不显现属预期（1M 是主战场）；cuDNN NSA kernel（sm_120）登记为加速路径 |
+| E+-8 | 增强 A：GDN 旁稀疏 KV 可写记忆层（低优先机制原型） | GDN-MemBlock 输出旁挂 Memory-Layers-at-Scale 式稀疏查找；写入规则与 GDN delta 规则同构（先擦后写，构造保证分布内）；门控衰减整段遗忘 | 设计 §15.2（v1.1）；**§17.3 已注明 HCA 路径"更省更一致"，故本项降为低优先** | 机制单测（查找/写入/遗忘门）即可，**不做训练消融**；是否保留进 1.5B config 由 F-0 评审 |
 
 ---
 
@@ -312,7 +314,7 @@ flowchart LR
 
 | 子阶段 | 内容 | 硬件 | 检查点 |
 |---|---|---|---|
-| F-0 配方冻结 | 汇总 D/E/E+ 结论：最终 config（含 PM-stream 是否进入）、mix、超参、WSD 各段长度、token 预算 | — | 训练方案评审通过，修订合入设计文档 |
+| F-0 配方冻结 | 汇总 D/E/E+ 结论：最终 config（**PM-stream 是否进入（E+-5 判定）、三级注意力栈替换全注意力占位（E+-7 判定）、增强 A 记忆层取舍（E+-8 评审）**）、mix、超参、WSD 各段长度、token 预算 | — | 训练方案评审通过，修订合入设计文档 |
 | F-1 短上下文主干 | 2K–8K 上下文预训练主体（WSD 稳定段） | 正式量多卡/云端；机制短训本机 | 周期性早期信号基准单调爬升；无不可逆 loss spike |
 | F-2 mid-training | Dolmino 式高质量退火（WSD 衰减段） | 同上 | 衰减段 loss 快速下掉；下游基准跳升 |
 | F-3 长上下文扩展 | Longmino 式数据 + 训练内 YaRN，逐级 32K→128K→1M | 1M 阶段云短租多卡 | **RULER** 各长度达标；长文 needle 测试通过 |
@@ -446,13 +448,14 @@ llama.cpp 已有 `GGML_OP_GATED_DELTA_NET` 算子与 Qwen3-Next converter；保�
 - 推理：vLLM 文档（Adding a New Model / LoRA / APC / Sleep Mode）；PyTorch 博客 "Hybrid Models as First-Class Citizens in vLLM"（2025-11）。
 - 评估：EleutherAI lm-evaluation-harness；RULER（长上下文）。
 
-### 12.3 立即行动清单（2026-07-24 v0.3 重写）
+### 12.3 立即行动清单（2026-07-25 v0.4 重写，组合消融后刷新）
 
-1. **S0 环境重建**（§6.6）：uv 3.12 venv → torch cu128 → `uv pip install -e .` → check_env 全绿 → pytest 全过。
-2. **S1 数据管线**：`prepare_data.py` 跑通（120M tokens）→ smoke_overfit 双变体 <0.1。
-3. **S2 pilot**：hybrid + attn_only 孪生各 2000 步 → 对比报告归档、基线回填 §12.1。
-4. **Block Spec v0.2 草案**：载体适用性字段 + **GUARD 块型（MCB）** + 双时态字段（valid_at/ingested_at，设计 §10.3 借鉴 Zep）。
-5. **阶段 E+ 启动**（§7.5）：E+-1 KAL 挂点先行，E+-5 PM-stream 消融独立分支。
-6. **EXP-PERSONA 细稿**（§8A）：MCB 宪法草案 + 对抗套件设计，评审通过后进入 E1 级。
-7. 【持续】阶段 A 教材路径推进——与 D-0 代码互证（教材的纯注意力 GPT ↔ 本框架 attention.py）。
-8. 【择机启动】底座模型实验（路线图 Phase 0–1）：本机 24GB 已解锁 9B 推理，可与 S2 之后穿插安排，不与 pilot 抢显存。
+1. ~~S0/S1/S2~~ ✅；~~E+-5 消融判定~~ ✅（3.744，达标）；~~E+-7 消融判定~~ ✅（3.762，达标）；~~组合消融~~ ✅（3.743，相容——**1.5B config 默认候选 = 混合 + PM-stream ON + 三级栈 ON**，消融矩阵全表见 D-0 报告 §6.4）。
+2. **E+-6 HRL 侧信道头簇**（当前最高优先）：五个微头挂 PM-stream（依赖已齐：PM 模型 checkpoint `pilot_0p1b_pmtri/final` 可作读点验证底座），KL-warmup 管线。
+3. **Block Spec v0.2 草案**（文档项）：载体适用性字段 + GUARD 块型（MCB）+ 双时态字段 + affect 字段（设计 §16.1，防自指 bootstrap 纪律）+ compiled.kind 三载体（CSA KV / HCA 条目 / 记忆层 KV，§15.3/§17.3）。
+4. **EXP-PERSONA 细稿**（§8A，文档项）：MCB 宪法草案 + 对抗套件设计，评审通过后进入 E1 级。
+5. **PM-stream 吞吐优化**（1.5B 前必做）：fp32 应用端替代 fp64、Sinkhorn 迭代数/精度、kernel 融合——目标 ≥2× 提速（当前 3.0k vs 基线 9.5k tok/s）。
+6. **D-2 0.5B 对拍**（§7.2-3）：混合 + PM + 三级栈组合 config 的正式判据规模；本机 24GB 可跑（8-bit AdamW）。
+7. 【里程碑】**git 提交**：S0–S2 + E+ 全部产出（代码/配置/文档/测试）待用户确认后提交。
+8. 【持续】阶段 A 教材路径推进——与 D-0 代码互证。
+9. 【择机启动】底座模型实验（路线图 Phase 0–1）：本机 24GB 已解锁 9B 推理，穿插安排，不与消融 run 抢显存。

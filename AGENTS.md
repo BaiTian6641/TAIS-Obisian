@@ -27,13 +27,13 @@
 
 - `src/tais_obsidian/`：框架包（`uv pip install -e .` 后可 import）
   - `config.py`：ModelConfig dataclass + JSON 读写
-  - `model/`：`attention.py`（CSA：RoPE+GQA+QK-Norm+SDPA，KV cache）、`gdn.py`（GDN：naive_recurrent + chunked 双路径，纯 PyTorch）、`model.py`（`TaisObsidianForCausalLM`，tied embedding，自研 `save_pretrained`/`from_pretrained`，不依赖 transformers 建模；`forward(capture_layers=...)` hidden-state 捕获挂点）、`blockpath.py`（CSA 块通路原型：stride-4 压缩器 + 块 KV 收割/注入 + namespace fail-closed，设计 §11.1）、`pmstream.py`（E+-5 PM-stream：mHC 多流残差 arXiv:2512.24880，`ModelConfig.pm_stream=5` 启用，默认 1 单流零改动；恒等初始化与单流基线 <1e-6）
+  - `model/`：`attention.py`（CSA：RoPE+GQA+QK-Norm+SDPA，KV cache）、`gdn.py`（GDN：naive_recurrent + chunked 双路径，纯 PyTorch）、`model.py`（`TaisObsidianForCausalLM`，tied embedding，自研 `save_pretrained`/`from_pretrained`，不依赖 transformers 建模；`forward(capture_layers=...)` hidden-state 捕获挂点）、`blockpath.py`（CSA 块通路原型：stride-4 压缩器 + 块 KV 收割/注入 + namespace fail-closed，设计 §11.1）、`pmstream.py`（E+-5 PM-stream：mHC 多流残差 arXiv:2512.24880，`ModelConfig.pm_stream=5` 启用，默认 1 单流零改动；恒等初始化与单流基线 <1e-6）、`kal.py`（E+-3 KAL 分层元认知头：L1 P(IK) 三态 W[d,3] + L2 valence/arousal W[d,2]，nn.Linear 可随 state_dict 存取；设计 §8.3-1/§16.2，探针管线见 scripts/kal_probe.py）
   - `data/memmap.py`：uint16 bin shard 读写与 batch 采样；`tokenizer_io.py`：tokenizer 封装
   - `train.py`：训练循环（bf16 autocast + fp32 参数、AdamW 分组、WSD 调度、grad clip 1.0、checkpoint/resume、tensorboard；config JSON 加 `"pm_stream": 5` 可开 PM 消融）
   - `generate.py`：cache 增量生成（temperature/top-k）
 - `configs/pilot_0p1b.json`：0.1B pilot 配置（12 层 = 3×{3 GDN + 1 CSA}，hidden 768，vocab 32768）；`configs/pilot_0p1b_pm.json`：PM-stream 消融变体（同基线 + `pm_stream: 5`）
-- `scripts/`：`check_env.py`（环境自检）、`prepare_data.py`（FineWeb-Edu → 训 32k BPE → 120M tokens shards）、`smoke_overfit.py`（双变体过拟合冒烟）、`smoke_overfit_pm.py`（PM-stream 变体过拟合冒烟）
-- `tests/`：`test_gdn.py`（GDN 两路径对拍 <1e-4）、`test_cache.py`（增量 vs 整段一致性、save/load 往返）、`test_capture.py`（hidden-state 捕获挂点）、`test_blockpath.py`（CSA 块通路机制）、`test_pmstream.py`（PM-stream：恒等初始化/稳定性/反向/save-load/增量/捕获）——均 pytest 可收集
+- `scripts/`：`check_env.py`（环境自检）、`prepare_data.py`（FineWeb-Edu → 训 32k BPE → 120M tokens shards）、`smoke_overfit.py`（双变体过拟合冒烟）、`smoke_overfit_pm.py`（PM-stream 变体过拟合冒烟）、`kal_probe.py`（E+-3 KAL 探针管线：L1 已知/未知 AUROC + FLARE 基线对比、L2 emotion→valence/arousal，输出 `runs/kal_probe/report.json`）
+- `tests/`：`test_gdn.py`（GDN 两路径对拍 <1e-4）、`test_cache.py`（增量 vs 整段一致性、save/load 往返）、`test_capture.py`（hidden-state 捕获挂点）、`test_blockpath.py`（CSA 块通路机制）、`test_pmstream.py`（PM-stream：恒等初始化/稳定性/反向/save-load/增量/捕获）、`test_kal.py`（KAL 头形状/管线 smoke/report schema）——均 pytest 可收集
 - 不入库：`data/`（tokenizer + shards）、`checkpoints/`、`runs/`、`logs/`
 
 ### 2.2 常用命令
@@ -56,11 +56,12 @@
 | 文件 | 版本 | 内容 |
 |---|---|---|
 | `docs/动态知识块记忆系统_设计文档.md` | v0.4 | DKB-MS 核心设计（What & Why）：体系结构类比、Block Spec v0.1（字段规范、生命周期状态机）、存储层级 L0–L3、苏醒序列、路由与学习、空白检测三通道、写通道 W0–W4 与页保护位（v0.4 修订注记：EXP-PERSONA 沙箱例外）、接口 ABI v0.1、人格块、可行性证据汇总（§11）、开放问题（§12） |
-| `docs/TAIS_Obsidian_细致框架设计文档.md` | v0.9 | TAIS Obsidian 1.5B 模型设计：模型配置表（§2）、原生 1M 训练方案（§3）、数据集计划（§4，基于 OLMo 3 / Dolma 3 系列）、BF16 训练配方（§5）、KAL/HRL/视觉空间区模块（§6）、T0–T5 训练方案（§7）、原生集成收益分析（§8）、与市面记忆框架对比（§10）、CSA 原生块通路与 HRL 侧信道头簇（§11，v0.7）、动态参数增长与 mHC 全层感知互联 PM-stream（§12，v0.8）、Reasoning-native 设计与规模化路径（§13，v0.9） |
+| `docs/TAIS_Obsidian_细致框架设计文档.md` | v1.3 | TAIS Obsidian 1.5B 模型设计：模型配置表（§2，v1.3 注意力栈三级化）、原生 1M 训练方案（§3）、数据集计划（§4）、BF16 训练配方（§5）、KAL/HRL/视觉空间区（§6）、T0–T5（§7）、原生集成收益分析（§8）、市面框架对比（§10）、CSA 块通路与 HRL 头簇（§11）、动态参数增长与 mHC PM-stream（§12）、Reasoning-native 与规模化（§13）、部署后学习终验（§14，v1.0）、理论桥与增强 A/B/C（§15，v1.1）、情感调制总线与 KAL 分层（§16，v1.2）、DeepSeek V4 骨干层整合 HCA/MoE·HRL 统一路由（§17，v1.3） |
 | `docs/DKB-MS_实施规划与路线图.md` | v0.2 | 实施路线图（How & When）：需求追溯矩阵 R1–R10、Phase 0–4 分阶段计划及各阶段**退出标准**、资源估算、风险登记册、立即行动清单（§8）；v0.2 挂接 EXP-PERSONA（Phase 4） |
 | `docs/从零构建TAIS-Obsidian_总体实施计划.md` | v0.3 | 从零构建/训练/推理的总实施计划（How，工程向）：工作站环境现状与检查清单（§1–2）、阶段 A–H、§6.6 D-0 逐步执行方案（S0 环境→S1 数据→S2 pilot+孪生）、§7.5 阶段 E+ 原生部件 0.1B 原型序列、§8A EXP-PERSONA 极其实验（人格块可读写 + KAL 道德约束块）、显存/吞吐/超参公式（§6、§12）、风险登记册（§11） |
 | `docs/TAIS_Obsidian_架构详图.png` | v0.4.1 | Carbon 设计语言架构详图：主干、KAL、HRL、知识块库、DKB-Runtime、记忆层级、睡眠巩固器、T0–T5 流水线、苏醒序列 |
 | `docs/D0_0p1B先导实验报告.md` | 2026-07-24 | D-0 0.1B 先导实验报告（工作站 S2）：hybrid vs attn_only 对照（val 3.768 vs 3.818，−0.050 nats）、训练/生成吞吐与显存基线、micro batch 标定、S2 退出判定通过 |
+| `docs/AGENT_PLAN_E+-5_PM-stream.md` | 2026-07-24 | E+-5 PM-stream（mHC n=5）实现规范与验收判据——交 GLM5.2（GitHub Copilot）交叉验证核心算法用，自包含 |
 
 注意：文档中引用的另一份配套文档《自我学习LLM框架构想_HippoK》(v0.2) **不在本仓库中**；旧命名 HippoK 已废止，统一为 TAIS Obsidian（tais-obsidian）。
 
