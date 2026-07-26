@@ -76,5 +76,13 @@ class ModelConfig:
 
     @classmethod
     def from_json(cls, path: str | Path) -> "ModelConfig":
+        """从 config.json 读配置。**向后兼容**：忽略未知字段（如旧 checkpoint 的
+        `attn_only`/`attn_impl`——2026-07 移除后旧 config.json 仍含这些键），
+        使旧 checkpoint 可在新代码下加载。"""
+        import dataclasses
         data = json.loads(Path(path).read_text(encoding="utf-8"))
-        return cls(**data)
+        valid = {f.name for f in dataclasses.fields(cls)}
+        dropped = sorted(set(data) - valid)
+        if dropped:
+            print(f"[config] 忽略未知字段（向后兼容）: {dropped}")
+        return cls(**{k: v for k, v in data.items() if k in valid})

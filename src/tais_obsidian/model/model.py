@@ -232,12 +232,25 @@ class TaisObsidianForCausalLM(nn.Module):
         save_file(sd, str(dir / "model.safetensors"))
 
     @classmethod
-    def from_pretrained(cls, dir: str | Path, device: str | torch.device = "cpu") -> "TaisObsidianForCausalLM":
+    def from_pretrained(
+        cls,
+        dir: str | Path,
+        device: str | torch.device = "cpu",
+        strict: bool = True,
+    ) -> "TaisObsidianForCausalLM":
+        """加载 checkpoint。**strict=False 兼容模式**：允许缺失/多余键——
+        旧 checkpoint（attn_impl=full 时代的 CSAAttention 权重）在新架构
+        （TriRetrievalAttention 三级栈，含 csa_comp/hca_comp/gate_w/gate_b 新参数）
+        下结构不同；strict=False 时旧主干权重（embedding/GDN/MLP/注意力 q/k/v/o_proj）
+        仍载入，新三级栈参数随机初始化（供后续微调）。默认 strict=True（同架构往返）。"""
         from safetensors.torch import load_file
 
         dir = Path(dir)
         cfg = ModelConfig.from_json(dir / "config.json")
         model = cls(cfg)
         sd = load_file(str(dir / "model.safetensors"))
-        model.load_state_dict(sd)  # bf16 自动 cast 到 fp32 参数
+        missing, unexpected = model.load_state_dict(sd, strict=strict)
+        if not strict and (missing or unexpected):
+            print(f"[from_pretrained] 兼容模式：missing {len(missing)} 键（新参数随机初始化），"
+                  f"unexpected {len(unexpected)} 键（忽略）")
         return model.to(device)

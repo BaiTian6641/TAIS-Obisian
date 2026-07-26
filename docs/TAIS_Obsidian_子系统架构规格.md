@@ -23,7 +23,7 @@ flowchart TB
   subgraph A["Part A 主干计算子系统（冻结基座）"]
     A1[A1 输入与动态词表层]
     A2[A2 GDN-MemBlock ×3 工作记忆寄存器]
-    A3[A3 CSA-AttnBlock ×1 情景检索 L1]
+    A3[A3 TriRetrievalAttention ×1 情景检索 L1]
     A4[A4 HCA 重压缩 L2 gist 块注入原生落点]
     A5[A5 滑窗 L0 精确]
     A6[A6 PM-stream mHC n=5 感知记忆专用道]
@@ -139,7 +139,7 @@ flowchart LR
   memlayer[增强A记忆层<br/>product-key KV] -.旁挂查询.-> read
 ```
 
-### A3 · CSA-AttnBlock（压缩稀疏注意力，情景检索 L1）
+### A3 · TriRetrievalAttention（三级检索注意力，情景检索 L1）
 
 - **责任**：全局选择性检索已压缩摘要 = "情景记忆 L1"；**陈述性块 KV 注入的原生落点**。
 - **架构角色**：占 1/4 层（7×1=7 层），是主干里唯一的"全局注意力"——补偿 GDN 遗忘性；原生 1M 上下文的成本控制点（indexer 每 query O(L) 打分 + O(k) 精细）。

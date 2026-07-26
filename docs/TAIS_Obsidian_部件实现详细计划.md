@@ -51,7 +51,7 @@ flowchart LR
 - **需要数据** 📊：FineWeb-Edu shards（已有 `data/memmap.py`）。
 - 🧠 前额叶工作记忆（递归状态）；⭐ Gated DeltaNet（arXiv:2412.06464）/ Titans MAL 同构。
 
-### A3 · CSA-AttnBlock（情景检索 L1）
+### A3 · TriRetrievalAttention（三级检索注意力，情景检索 L1）
 - **是什么**：1/4 层（7 层）的全局压缩稀疏注意力，陈述性块 KV 注入原生落点。🔗 已有 `model/attention.py`。
 - **做什么**：stride-4 压缩（m=4）→ FP8 indexer top-128 选择 → 精细注意力；`harvest()` 自编译收割压缩 KV；块 KV 拼接注入（namespace 校验）。
 - **怎么实现** 📐：GQA 16Q/2KV×128，partial RoPE + YaRN；双 KV 流 + 重叠 2m-softmax。`harvest(ctx_tokens)→kv_block`；`inject(kv_block, ns)→modified_kv`（namespace 不匹配 fail-closed）。

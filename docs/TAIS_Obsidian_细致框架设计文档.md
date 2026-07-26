@@ -25,7 +25,7 @@ flowchart TB
     direction TB
     EMB["Embedding（tied，vocab 129280）<br/>+ 视觉 token 接口 + 知识块注入点"]
     GDN["3 × GDN-MemBlock<br/>递归状态 = 工作记忆寄存器（原生无界）"]
-    CSA["1 × CSA-AttnBlock<br/>stride-4 压缩 + indexer top-128 + 滑窗 512"]
+    CSA["1 × TriRetrievalAttention<br/>滑窗 512 L0 + CSA stride-4 选择检索 L1 + HCA 128:1 gist L2"]
     HEAD["RMSNorm → LM-Head（DoLa 开关）→ MTP"]
     EMB --> GDN --> CSA --> HEAD
   end
@@ -90,7 +90,7 @@ bf16-mixed：bf16 计算 + FP32 主权重 + FP32 优化器 + FP32 梯度累积�
 
 ## 6. 逐模块与视觉空间区（沿 v0.3）
 
-- **主干**：GDN-MemBlock（状态=工作记忆寄存器，预留 state_read/write）；CSA-AttnBlock（KV prefix 块仅注入本层）；注入点接受 LoRA/KV/steering 三载荷；
+- **主干**：GDN-MemBlock（状态=工作记忆寄存器，预留 state_read/write）；TriRetrievalAttention（三级检索注意力：滑窗 L0 + CSA 选择检索 L1 + HCA gist L2，KV prefix 块仅注入本层）；注入点接受 LoRA/KV/steering 三载荷；
 - **KAL（骨干内生，非外挂探针）**：三态头作为 checkpoint 内的原生权重，预训练阶段即以 P(IK) 式辅助目标参与训练（§8）；输出经**学习型投影**直接写入残差流；回想/空白/总结以**原生特殊 token**（`<|recall|>`、`<|blank|>`、`<|gist|>`，与 `<|ref|>/<|box|>` 同一"生成中的结构化动作"范式）发出；ITI 方向蒸馏为原生干预头。推理时**零外部服务依赖**；
 - **HRL**：DG 模式分离 → FP8 分块归并 Indexer（不物化分数张量，StreamIndex 红线）→ 页表；CA3 PPR 联想 ε≈0.1；CA1 巩固门；预测预取器；
 - **视觉空间区**：冻结 ViT + 3×3 压缩（→324 token/图）+ CSA 再压 4×；`<|ref|>/<|box|>` 推理内交织；视觉经验固化为空间记忆块（route_key 带坐标邻近度边）；V1 对齐 → V2 原语 SFT → V3 空间 RL。
@@ -293,7 +293,7 @@ CoT 思考段 → KAL 持续监测（PM-stream 三态信号）
 
 - 残差流 n=5：4 内容流 + **1 PM-stream**；双随机约束保证稳定（信号放大 ≤1.6×）；
 - **感知访问（读）**：KAL 三态头、四个侧信道头（ℓ8 预取 / ℓ14 写显著·冲突 / ℓ18 归因·联想）统一从 **GDN-MemBlock 输出处的 PM-stream** 读取——GDN 层的状态压缩特性使其输出最适合做"已理解内容"的摘要信号；
-- **注入访问（写）**：HRL 的载荷经 H_post 映射写入 **CSA-AttnBlock 残差前的 PM-stream**——紧邻全局检索层，注入信息立刻参与注意力计算；KV prefix 块直接拼入 CSA 压缩 KV 区（§11.1）；
+- **注入访问（写）**：HRL 的载荷经 H_post 映射写入 **TriRetrievalAttention 残差前的 PM-stream**——紧邻全局检索层，注入信息立刻参与注意力计算；KV prefix 块直接拼入 CSA 压缩 KV 区（§11.1）；
 - 人格向量也经 PM-stream 注入（与 KAL/ITI 共用通路，单一写入纪律）。
 
 ### 13.5 规模化路径（1.5B 验证 → 生产规模）

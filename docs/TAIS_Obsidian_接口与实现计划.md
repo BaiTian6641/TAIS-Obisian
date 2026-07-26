@@ -37,7 +37,7 @@
 ```
 src/tais_obsidian/
   model/                      # 🟢 checkpoint 内生（前向可微）
-    attention.py              # CSA-AttnBlock（已有）
+    tri_attention.py          # TriRetrievalAttention 三级检索注意力（滑窗+CSA+HCA+可选 indexer）
     gdn.py                    # GDN-MemBlock（已有）
     model.py                  # TaisObsidianForCausalLM（已有，加内核挂点）
     blockpath.py              # CSA 块通路（已有）
@@ -219,7 +219,7 @@ flowchart TB
 ## 5. 主干与注入点（关键接口）
 
 - **GDN-MemBlock**（A2）：递归状态=工作记忆；🔧 W-State 须自研 state checkpointing；GDN 遗忘性由 CSA 补偿。
-- **CSA-AttnBlock**（A3）：stride-4 压缩 + indexer top-128；**`harvest()` 自编译接口**（⭐ ICAE 4× / ⭐ kv-distill 99%）；块 KV 拼接注入。
+- **TriRetrievalAttention**（A3）：滑窗 L0 + CSA stride-4 压缩选择 L1 + HCA 128:1 gist L2；**`harvest()` 自编译接口**（⭐ ICAE 4× / ⭐ kv-distill 99%）；块 KV 拼接注入；可选独立 LightningIndexer（tri_use_indexer）。
 - **HCA 重压缩**（A4）：128:1 gist；🔧 **块注入原生落点**；W-State 不得在 HCA 上游改残差（Part Z 红线）。
 - **PM-stream**（A6）：mHC n=5，恒等初始化 <1e-6；KAL/HRL 读写点。
 - **注入点 `injection.py`**：🔧 **载体能力边界**（⭐ 已核实）——token 寻址载体（KV/记忆层）能事实回忆；位置不变向量（ICV/steering）不能。Block Spec 须标"事实召回能力"字段。
