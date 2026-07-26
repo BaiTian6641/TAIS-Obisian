@@ -66,8 +66,10 @@ def extract_hidden_and_teacher(
             break
     else:
         raise RuntimeError("无 'A' 层，无法派生教师分数（fail-closed）")
-    q = mixer.q_norm(mixer.q_proj(hidden)).view(hidden.shape[0], hidden.shape[1], mixer.n_q, mixer.head_dim)
-    k = mixer.k_norm(mixer.k_proj(hidden)).view(hidden.shape[0], hidden.shape[1], mixer.n_kv, mixer.head_dim)
+    B, T, _ = hidden.shape
+    # q_norm/k_norm 作用在 head_dim（64），须先 view 拆头再归一化（对齐 tri_attention 前向实现）
+    q = mixer.q_norm(mixer.q_proj(hidden).view(B, T, mixer.n_q, mixer.head_dim))
+    k = mixer.k_norm(mixer.k_proj(hidden).view(B, T, mixer.n_kv, mixer.head_dim))
     # 跨 kv 头分组（GQA：n_q//n_kv 个 q 头共享一个 kv 头），对组内均值 → [B,T,hd]
     group = mixer.n_q // mixer.n_kv
     q_grp = q.view(hidden.shape[0], hidden.shape[1], mixer.n_kv, group, mixer.head_dim).mean(dim=3)
