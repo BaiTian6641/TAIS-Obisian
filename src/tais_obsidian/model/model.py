@@ -125,9 +125,13 @@ class TaisObsidianForCausalLM(nn.Module):
 
         内核权重进 self.kernel（nn.Module 子模块），save_pretrained/from_pretrained
         自动随 state_dict 存取（无需特殊处理）。重复调用安全（幂等）。
+        设备对齐：内核移到主干 embedding 权重所在设备/dtype（from_pretrained(..., device)
+        后 attach 时内核默认在 CPU，须显式跟随主干，防 sense/inject 设备不匹配）。
         """
         cfg = self.config
         self.kernel = TAISKernel(cfg.d_model, dg_dim=cfg.kernel_dg_dim, dg_topk=cfg.kernel_dg_topk)
+        p = self.embed.weight
+        self.kernel = self.kernel.to(device=p.device, dtype=p.dtype)
 
     @staticmethod
     def _init_weights(m: nn.Module) -> None:
