@@ -202,6 +202,9 @@ def main() -> None:
         tri_csa_stride=cfg.get("tri_csa_stride", 4),
         tri_csa_topk=cfg.get("tri_csa_topk", 128),
         tri_hca_stride=cfg.get("tri_hca_stride", 128),
+        tri_use_indexer=cfg.get("tri_use_indexer", False),
+        tri_index_heads=cfg.get("tri_index_heads", 4),
+        tri_index_dim=cfg.get("tri_index_dim", 32),
         kernel_enabled=cfg.get("kal_aux_weight", 0.0) > 0.0,
         kernel_sense_layers=cfg.get("kal_sense_layers") or [],
     )
