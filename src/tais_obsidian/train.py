@@ -193,6 +193,10 @@ def main() -> None:
     # TF32：GDN 核心算子内部 fp32 GEMM 走 tensor core（训练吞吐 ~1.4x；单元对拍不开启，仍全 fp32）
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
+    # 效率加固：eager 路径 fp32 GEMM 统一走 TF32 tensor core；固定 shape 下 cudnn 算法自动调优。
+    # 两者仅影响训练吞吐，不改变数值语义（仍 bf16 autocast + fp32 主权重）；单元测试不经过 main，不受影响。
+    torch.set_float32_matmul_precision("high")
+    torch.backends.cudnn.benchmark = True
 
     # pm_stream/pm_constrain 缺省 = 1/True（单流基线零改动）；PM 消融在 config JSON 中加 "pm_stream": 5
     model_cfg = ModelConfig(
