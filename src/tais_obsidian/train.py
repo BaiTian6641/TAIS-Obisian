@@ -46,6 +46,11 @@ DEFAULTS = dict(
     log_every=20,
     ckpt_every=500,
     attn_only=False,
+    # KAL 内生训练（T1 预训练后期；默认 0.0=关，既有训练零改动）：
+    # kal_aux_weight>0 时启用 P(IK) 内生辅助损失（kal_pik_aux_loss），
+    # 探针梯度只进 KAL 头（detach 主干，监测/执行分置红线）。
+    kal_aux_weight=0.0,
+    kal_sense_layers=None,  # 例 [4, 8]；None=全部 GDN 层
 )
 
 
@@ -93,6 +98,44 @@ def chunked_ce(logits: torch.Tensor, targets: torch.Tensor, chunk: int = 4096) -
         part = F.cross_entropy(flat[i : i + chunk].float(), tgt[i : i + chunk], reduction="sum")
         total = part if total is None else total + part
     return total / flat.shape[0]
+
+
+def kal_pik_aux_loss(model, x: torch.Tensor, y: torch.Tensor, sense_layers: list[int]) -> torch.Tensor | None:
+    """KAL P(IK) 内生辅助损失（T1 预训练后期，Kadavath arXiv:2207.05221 范式的最小实现）。
+
+    在线自标注（自包含）：用主干自己 next-token 正确性生成 P(IK) 伪标签——
+    主干预测对的位置 → "知道"（类 0），预测错 → "未知"（类 2；类 1"不确定"暂欠）。
+    这避免引入外部已知/未知数据集，P(IK) 信号直接锚在主干自身的知识边界上。
+
+    红线（监测/执行分置 + 探针冻结语义，部件详细计划 Part B）：
+    - **辅助损失只进 KAL 头**：对主干 hidden state（captures）**detach**，探针梯度
+      绝不回传到主干残差流——否则模型会把"是否知道"重编码到不可读基底
+      （NeurIPS 激活监控的安全警示 + "探针冻结"红线）。
+    - 内核未挂载或层无 sense 输出时返回 None（不阻塞主干训练）。
+
+    返回标量辅助损失（调用方乘 kal_aux_weight 后并入总损失）。
+    """
+    if model.kernel is None:
+        return None
+    with torch.no_grad():
+        # 主干 next-token 伪标签（detach，不反传）
+        logits, _, captures = model(x, capture_layers=sense_layers)
+        pred = logits.argmax(dim=-1)
+        known = (pred == y).float()  # [B,T]，1=知道
+    # 二分类交叉熵：对每层 sense 输出的 P(IK) logits 取 [..., [0,2]] 两类
+    total = None
+    n = 0
+    for i in sense_layers:
+        if i not in captures or i not in model.kernel_sense_index():
+            continue
+        pm = captures[i]["pm"] if isinstance(captures[i], dict) else captures[i]
+        sense = model.kernel.sense(pm.detach())  # detach 主干，探针梯度只进 KAL 头
+        pik = sense.pik_logits  # [B,T,3]
+        two = torch.stack([pik[..., 0], pik[..., 2]], dim=-1)  # [B,T,2] = 知道/未知
+        ce = F.cross_entropy(two.reshape(-1, 2).float(), known.reshape(-1).long())
+        total = ce if total is None else total + ce
+        n += 1
+    return (total / n) if n > 0 else None
 
 
 @torch.no_grad()
@@ -163,6 +206,8 @@ def main() -> None:
         tri_csa_stride=cfg.get("tri_csa_stride", 4),
         tri_csa_topk=cfg.get("tri_csa_topk", 128),
         tri_hca_stride=cfg.get("tri_hca_stride", 128),
+        kernel_enabled=cfg.get("kal_aux_weight", 0.0) > 0.0,
+        kernel_sense_layers=cfg.get("kal_sense_layers") or [],
     )
     model = TaisObsidianForCausalLM(model_cfg).to(device)
     opt = build_optimizer(model, cfg)
@@ -209,6 +254,14 @@ def main() -> None:
                 with torch.autocast("cuda", torch.bfloat16):
                     logits, _ = model(x)
                     loss = chunked_ce(logits, y)
+                    # KAL 内生辅助损失（T1 预训练后期；默认关）。
+                    # 注意：kal_pik_aux_loss 内部对主干 hidden detach，探针梯度只进 KAL 头
+                    # （监测/执行分置红线）；主干 CE 仍走完整计算图。
+                    if cfg.get("kal_aux_weight", 0.0) > 0.0:
+                        sense_layers = model.kernel_sense_index()
+                        aux = kal_pik_aux_loss(model, x, y, sense_layers)
+                        if aux is not None:
+                            loss = loss + cfg["kal_aux_weight"] * aux
                 (loss / cfg["grad_accum"]).backward()
                 loss_accum += loss.item() / cfg["grad_accum"]
         except (torch.cuda.OutOfMemoryError, torch.AcceleratorError) as e:

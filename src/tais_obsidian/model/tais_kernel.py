@@ -112,6 +112,30 @@ class HRLIndexer(nn.Module):
         with torch.no_grad():
             self.score.weight.copy_(w)
 
+    def init_from_attention_qproj(self, q_proj_weight: torch.Tensor, d_model: int, n_q_heads: int, head_dim: int) -> None:
+        """从注意力 q_proj 派生 indexer 初始化（设计 §11.1 的可提取近似）。
+
+        依据：本仓库两个注意力实现（full=FullAttention、tri=三级栈）的"检索打分"都是
+        query 对 key 的点积（tri 的 CSA 分支选择分数 = 压缩注意力分数 Softmax(q·K̃)，
+        **非独立 indexer 模块**，见 tri_attention.py docstring）。故"CSA indexer 向量"在
+        当前实现中无独立实体，最贴近的可提取来源是 **q_proj 的打分方向聚合**——
+        q_proj: d_model → (n_q_heads·head_dim)，按 query 头聚合回 d_model 维"检索方向"，
+        作为 HRL Indexer 的 warm-start。
+
+        聚合方式：W_q [n_q*hd, d] → 按头分块取均值方向（对 d_model 各维取 |均值| 归一），
+        得 [1, d_model]。这是**近似初始化**（诚实标注：非 §11.1 设想的独立 indexer，
+        而是 query 打分方向的聚合；T2 仍须经块域 KL 对齐正式训练）。
+        """
+        W = q_proj_weight.detach().float()  # [n_q*hd, d]
+        assert W.shape == (n_q_heads * head_dim, d_model), \
+            f"q_proj 形状 {tuple(W.shape)} ≠ ({n_q_heads*head_dim}, {d_model})"
+        # 按 query 头聚合：对 n_q 个头在 d_model 各维求均值方向，再归一
+        per_head = W.view(n_q_heads, head_dim, d_model).mean(dim=1)  # [n_q, d]
+        direction = per_head.mean(dim=0, keepdim=True)  # [1, d]
+        direction = direction / (direction.norm() + 1e-6)
+        with torch.no_grad():
+            self.score.weight.copy_(direction.to(self.score.weight.dtype))
+
 
 class DGProjection(nn.Module):
     """DG 模式分离投影（方案 B 内生；接口计划 §4.1 / C1）。
@@ -197,6 +221,22 @@ class TAISKernel(nn.Module):
     def load_indexer_from_csa(self, csa_indexer_weight: torch.Tensor) -> None:
         """用 CSA indexer 权重初始化 HRL Indexer（设计 §11.1 同构初始化）。"""
         self.hrl_indexer.load_from_csa_indexer(csa_indexer_weight)
+
+    def init_indexer_from_model(self, model) -> int:
+        """从主干的注意力层 q_proj 派生 HRL Indexer 初始化（设计 §11.1 的可提取近似）。
+
+        取第一个注意力层（type "A"）的 q_proj，按头聚合出检索方向初始化 Indexer。
+        返回初始化的层索引；无注意力层返回 -1（fail-closed，不初始化）。
+        """
+        for i, layer in enumerate(model.layers):
+            if layer.type == "A":
+                mixer = layer.mixer
+                self.hrl_indexer.init_from_attention_qproj(
+                    mixer.q_proj.weight, model.config.d_model,
+                    mixer.n_q, mixer.head_dim,
+                )
+                return i
+        return -1
 
     def inject(
         self,

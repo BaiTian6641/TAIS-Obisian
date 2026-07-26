@@ -37,6 +37,23 @@
 ### Gated DeltaNet — arXiv:2412.06464, 2024-12
 - TAIS GDN 层的直接母体（Mamba2 + delta rule + forget gate）。Titans §App.C 证明其 LMM 是 Gated DeltaNet 的推广（加 momentum + 深记忆 + 非线性递归 + forget gate）。
 
+### Gated DeltaNet-2 — arXiv:2605.22791, NVIDIA（Hatamizadeh, Choi, Kautz），2026-05 ⭐⭐⭐【机会】✅
+- **核心主张**：解耦 **erase gate `b_t∈[0,1]^{d_k}`（key 侧，移除衰减状态哪些坐标）** 与 **write gate `w_t∈[0,1]^{d_v}`（value 侧，承诺哪些新值坐标）**，去除原版 GDN/KDA 单一标量 βₜ 的 tied 限制。更新式 `S_t=(I−k_t(b_t⊙k_t)ᵀ)·D_t·S_{t-1}+k_t(w_t⊙v_t)ᵀ`（D_t=Diag(α_t) 通道级衰减）；β 合并为标量退化为 KDA，衰减也合并退化为 Gated DeltaNet。chunkwise WY 形式保持并行训练（gate-aware backward）。
+- **实证**：matched 1.3B / 100B FineWeb-Edu，超越 Mamba-2 / Gated DeltaNet / KDA / Mamba-3（recurrent 与 hybrid 双设定）；**RULER 长上下文检索大幅领先**（S-NIAH-3@2K 63.2→89.8，MK-NIAH-1@4K 28.0→37.8 over KDA），吞吐仅小常量开销。
+- **与 TAIS 的对应**：① 精确对应读写不对称红线——erase/write 解耦 = W2 记忆层 delta 写与门控衰减遗忘的细粒度分离；② RULER/NIAH 检索增益正对 §25.2"GDN 固定状态检索密集遗忘（2510.20787）→CSA 补偿"，是 CSA 补偿外的另一条补强路径（列 T1/T2 消融 GDN vs GDN-2）；③ 增强A memlayer 已采纳：write() 支持 erase_gate/write_gate 解耦（默认 tied 向后兼容，见 model/memlayer.py）。
+- **核实状态**: ✅已核实（arXiv HTML/PDF + MarkTechPost 二次确认）。
+
+### DeepSeek lightning indexer（V3.2 DSA 原型）— DeepSeek V3.2 技术报告 ⭐⭐⭐【关键】✅
+- **核心主张**：`I_{t,s}=Σ_{j=1}^{H_I} w^I_{t,j}·ReLU(q^I_{t,j}·k^I_s)`（Eq.1）——**独立的低维 indexer**：自有 q^I（query 侧）、k^I（key 侧）投影，**非复用主干注意力**；indexer 头数少、维度低、ReLU（吞吐）、可 FP8（V4 降 FP4）。复杂度 O(L²)→O(L·k)。
+- **warmup**：先冻结主干，用 **KL 散度对齐** indexer 分布到稠密主注意力分布（~1000 步/2.1B tokens 短校准），再开 top-k 稀疏训练。V4 CSA 在**已压缩条目**上打分（先 stride-4 压缩再选）。
+- **与 TAIS 的对应**：HRL 检索的**真正独立打分器**范式——区别于复用 q_proj 近似；我们的 `model/hrl_indexer.py` LightningIndexer 照此实现（多头 q^I/w^I/k^I + ReLU + top-k + KL warmup）。
+- **核实状态**: ✅已核实（DeepSeek V3.2 技术报告 Eq.1 + SGLang/分析博客二次确认）。
+
+### PEER（Parameter Efficient Expert Retrieval）— arXiv:2407.04153, DeepMind（He）, 2024-07 ⭐⭐⭐【关键】✅
+- **核心主张**：product key 检索（分半键集 K1/K2∈R^{√N×d/2}，笛卡尔积，全集不实例化，O(√N) 而非 O(N)）+ **内生独立 query network** 路由到百万级小专家。top-k 离散无梯度，但**分数可微**（梯度流经分数到 query/keys）。
+- **与 TAIS 的对应**：证明"内容寻址检索器该独立、可训练、内生"；PEER 的 product-key 与我们增强A memlayer 的 product-key 同源；HRL Indexer 的内生性佐证（用户选方案 B）。
+- **核实状态**: ✅已核实（arXiv abstract + HuggingFace paper page）。
+
 ---
 
 ## 交叉干扰分析：CSA/HCA ↔ TTT-E2E

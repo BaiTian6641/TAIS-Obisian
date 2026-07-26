@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from tais_obsidian.config import ModelConfig
-from tais_obsidian.model.attention import CSAAttention
+from tais_obsidian.model.attention import FullAttention
 from tais_obsidian.model.blockpath import (
     NamespaceMismatchError,
     make_namespace,
@@ -85,10 +85,10 @@ def check_shapes(device: str) -> None:
     # 纪律：默认 attn_impl="full" 走 CSAAttention；attn_only=True + "tri" 仍全注意力
     torch.manual_seed(0)
     m_def = TaisObsidianForCausalLM(tiny_cfg(attn_impl="full")).to(device)
-    assert isinstance(m_def.layers[3].mixer, CSAAttention)
+    assert isinstance(m_def.layers[3].mixer, FullAttention)
     torch.manual_seed(0)
     m_ao = TaisObsidianForCausalLM(tiny_cfg(attn_impl="tri", attn_only=True)).to(device)
-    assert all(isinstance(b.mixer, CSAAttention) for b in m_ao.layers)
+    assert all(isinstance(b.mixer, FullAttention) for b in m_ao.layers)
     print("[a] 形状（整段/增量、分支/门控/融合）与 attn_only 纪律通过")
 
 

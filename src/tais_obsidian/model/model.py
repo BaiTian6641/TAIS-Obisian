@@ -14,7 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ..config import ModelConfig
-from .attention import CSAAttention
+from .attention import FullAttention
 from .common import RMSNorm
 from .gdn import GDNBlock
 from .pmstream import PMStreamMix
@@ -51,7 +51,7 @@ class Block(nn.Module):
             # 三级注意力栈（E+-7）：attn_only=True 对照组始终全注意力（plan 纪律）
             self.mixer = TriAttention(cfg)
         else:
-            self.mixer = CSAAttention(cfg)
+            self.mixer = FullAttention(cfg)
         self.norm2 = RMSNorm(cfg.d_model, cfg.rms_eps)
         self.mlp = SwiGLU(cfg.d_model, cfg.mlp_hidden)
         if cfg.pm_stream > 1:
@@ -132,6 +132,15 @@ class TaisObsidianForCausalLM(nn.Module):
         self.kernel = TAISKernel(cfg.d_model, dg_dim=cfg.kernel_dg_dim, dg_topk=cfg.kernel_dg_topk)
         p = self.embed.weight
         self.kernel = self.kernel.to(device=p.device, dtype=p.dtype)
+
+    def kernel_sense_index(self) -> list[int]:
+        """KAL sense 读点层索引（config.kernel_sense_layers；空=全部 GDN 层）。
+
+        供 train.py 的 KAL 辅助损失定位 sense 输出层。
+        """
+        if self.config.kernel_sense_layers:
+            return list(self.config.kernel_sense_layers)
+        return [i for i, t in enumerate(self.config.layer_types) if t == "G"]
 
     @staticmethod
     def _init_weights(m: nn.Module) -> None:

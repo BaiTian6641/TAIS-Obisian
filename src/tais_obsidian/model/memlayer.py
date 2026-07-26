@@ -8,6 +8,10 @@
   **写入规则与 GDN delta 同构** `S ← S + β(v − v̄)⊗k`（先擦除旧关联再写入），
   使运行时写入**由构造保证在分布内**（Fast Weight Programmer 视角）；容量管理复用
   门控衰减（可整段遗忘）。
+- **Gated DeltaNet-2（arXiv:2605.22791，NVIDIA 2026-05）**：erase/write 解耦——
+  erase gate（key 侧，移除衰减状态哪些坐标）与 write gate（value 侧，承诺哪些新值坐标）
+  独立，去除原版单一标量 β 的 tied 限制；`S_t=(I−k(b⊙k)ᵀ)D_t S_{t-1}+k(w⊙v)ᵀ`。
+  本层 write() 支持 erase_gate/write_gate 解耦（默认 tied 向后兼容）。
 - 🧠 海马 DG/CA3（DG 模式分离 + CA3 自动联想）。
 - 🔧 载体能力边界：记忆层条目为 **token 寻址**（key→value），**能事实召回**（接口计划 §6）。
 
@@ -61,16 +65,47 @@ class MemoryLayer(nn.Module):
         delta = self.gate * (qn @ self.state)    # [..., value_dim]
         return mem + delta
 
-    def write(self, k: torch.Tensor, v: torch.Tensor, beta: float = 1.0) -> None:
-        """delta 规则写入（与 GDN 同构）：S ← S + β(v − k·S)⊗k。
+    def write(
+        self,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        beta: float = 1.0,
+        erase_gate: torch.Tensor | float | None = None,
+        write_gate: torch.Tensor | float | None = None,
+    ) -> None:
+        """delta 规则写入（与 GDN 同构；GDN-2 erase/write 解耦扩展）。
 
-        先擦除旧关联（k·S 的当前读出 v̄，注意 state [KD, D]、读出 = k 左乘）再写入新关联
-        → 由构造保证运行时写入在分布内。k [key_dim]，v [value_dim]；无梯度（W2 通道）。
+        原版（tied，Gated DeltaNet）：`S ← S + β(v − k·S)⊗k`——标量 β 同时控制
+        "擦多少旧读出"和"写多少新值"（建模限制）。
+
+        GDN-2 解耦（arXiv:2605.22791，NVIDIA 2026-05）：erase gate（key 侧，移除衰减状态
+        哪些坐标）与 write gate（value 侧，承诺哪些新值坐标）独立：
+        `S ← S + β·outer(k, w ⊙ (v − e ⊙ (k·S)))`，其中 e=erase_gate（[key_dim] 或标量），
+        w=write_gate（[value_dim] 或标量）；e=w=β 时退化为 tied 原版（向后兼容）。
+        先擦除旧关联（e ⊙ (k·S)）再写入新关联（w ⊙ 残差）→ 由构造保证运行时写入分布内。
+        无梯度（运行时零梯度快写，W2 通道）。
         """
         with torch.no_grad():
             kn = nn.functional.normalize(k, dim=-1)
-            old = kn @ self.state                  # 当前对 k 的读出 v̄ [value_dim]
-            self.state += beta * torch.outer(kn, v - old)  # [KD, D]
+            e = self._as_gate(erase_gate, self.key_dim, kn.device, kn.dtype)     # [key_dim]，key 侧
+            w = self._as_gate(write_gate, self.value_dim, kn.device, kn.dtype)   # [value_dim]，value 侧
+            # erase（key 侧，GDN-2 b⊙k）：控制擦除时 key 的哪些坐标参与读出/外积
+            kn_eff = e * kn
+            old = kn_eff @ self.state              # 旧读出 v̄ [value_dim]
+            # write（value 侧，GDN-2 w⊙·）：控制承诺 value 的哪些坐标
+            residual = w * (v - old)
+            self.state += beta * torch.outer(kn_eff, residual)  # [key_dim, value_dim]
+
+    @staticmethod
+    def _as_gate(gate, dim: int, device, dtype) -> torch.Tensor:
+        """门参数规整为 [dim] 向量；None→1（全通），标量→广播，向量→校验维度。"""
+        if gate is None:
+            return torch.ones(dim, device=device, dtype=dtype)
+        if isinstance(gate, (int, float)):
+            return torch.full((dim,), float(gate), device=device, dtype=dtype)
+        g = gate.to(device=device, dtype=dtype)
+        assert g.shape[-1] == dim, f"门维度 {g.shape[-1]} ≠ {dim}"
+        return g.reshape(-1) if g.dim() > 1 else g
 
     def forget(self, gate: float) -> None:
         """门控衰减遗忘（容量管理，无需删除逻辑）：S ← gate · S，gate∈[0,1]。"""

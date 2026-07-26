@@ -1,7 +1,7 @@
 """CSA 原生块通路原型（设计文档 §11.1）：stride-4 学习压缩器 + 块 KV 收割/导出 + namespace 校验注入。
 
 机制验证专用，不训练压缩器：
-- ``CSACompressor``：把 CSA 层连续 stride 个 token 的 k/v 条目各压成 1 条；
+- ``BlockCompressor``：把 CSA 层连续 stride 个 token 的 k/v 条目各压成 1 条；
 - ``harvest_block_kv``：无 cache 前向后从返回 cache 收割各 "A" 层全量 k/v 并压缩导出；
 - ``inject_block_kv``：namespace 五元组校验通过后，把压缩块 KV 前置拼入目标 "A" 层 state。
 
@@ -28,7 +28,7 @@ class NamespaceMismatchError(RuntimeError):
     """
 
 
-class CSACompressor(nn.Module):
+class BlockCompressor(nn.Module):
     """stride-4 学习压缩器原型：连续 stride 个 token 的 k/v 条目压成 1 条。
 
     per-head 共享一个 Linear(stride*head_dim → head_dim)，k、v 各自一个投影，无 bias。
@@ -94,7 +94,7 @@ def check_namespace(expected: dict, got: dict) -> None:
 def harvest_block_kv(
     model: nn.Module,
     ids: torch.Tensor,
-    compressor_by_layer: dict[int, CSACompressor],
+    compressor_by_layer: dict[int, BlockCompressor],
     device: str | torch.device,
 ) -> dict:
     """无 cache 前向，收割各 "A" 层全量 k/v，过压缩器导出块 KV。

@@ -12,7 +12,7 @@ from ..config import ModelConfig
 from .common import RMSNorm
 
 
-class CSAAttention(nn.Module):
+class FullAttention(nn.Module):
     def __init__(self, cfg: ModelConfig):
         super().__init__()
         d = cfg.d_model

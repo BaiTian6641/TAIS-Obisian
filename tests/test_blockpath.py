@@ -16,7 +16,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 from tais_obsidian.config import ModelConfig
 from tais_obsidian.model.blockpath import (
     COMPRESSOR_VERSION,
-    CSACompressor,
+    BlockCompressor,
     NamespaceMismatchError,
     harvest_block_kv,
     inject_block_kv,
@@ -46,13 +46,13 @@ def _build(device: str):
     cfg = tiny_cfg()
     model = TaisObsidianForCausalLM(cfg).to(device).eval()
     a_layers = [i for i, t in enumerate(cfg.layer_types) if t == "A"]
-    comps = {i: CSACompressor(cfg.head_dim, stride=4).to(device).eval() for i in a_layers}
+    comps = {i: BlockCompressor(cfg.head_dim, stride=4).to(device).eval() for i in a_layers}
     return cfg, model, comps, a_layers
 
 
 def check_compress_shape(device: str) -> None:
     """a) 压缩形状：T → floor(T/4)，尾部不足 stride 丢弃。"""
-    comp = CSACompressor(64, stride=4).to(device)
+    comp = BlockCompressor(64, stride=4).to(device)
     for T, want in ((16, 4), (17, 4), (19, 4), (3, 0)):
         k = torch.randn(2, 2, T, 64, device=device)
         v = torch.randn(2, 2, T, 64, device=device)

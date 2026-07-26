@@ -7,7 +7,7 @@ DeepSeek V4 混合压缩注意力 / NSA（arXiv:2502.11089）谱系的项目化�
 三分支（与 L0/L1/L2 存储层级一一对应，设计 §17.2）：
 
 - **滑窗分支（L0 精确）**：最近 ``tri_window`` 个 token 的精确注意力（RoPE + GQA，
-  与 CSAAttention 同纪律的 masked SDPA）。NSA §3.3.3：独立滑窗分支防止局部模式
+  与 FullAttention 同纪律的 masked SDPA）。NSA §3.3.3：独立滑窗分支防止局部模式
   短路压缩/选择分支的学习。
 - **CSA 分支（L1 情景）**：stride-``tri_csa_stride`` 学习压缩器把全量 k/v 压成 T/stride
   条目；importance = 压缩注意力分数（NSA Eq.8：p=Softmax(q·K̃)，**非独立 indexer 模块**；
@@ -27,7 +27,7 @@ plan 要求 init 均等；NSA 原文只说 sigmoid MLP，未给初始化——�
 1. 压缩块构造：NSA Eq.7（MLP+块内位置编码，l=32/d=16 重叠）；V4 §2.3.1 Eq.9–12
    （softmax 门控池化 + 学习位置偏置 B∈R^{m×c}，CSA 重叠 2m 窗口，HCA 不重叠 §2.3.2）。
    **本实现采用 V4 式 softmax 门控池化、CSA/HCA 均不重叠**（简化：CSA 重叠减半信息碎裂
-   但参数翻倍，0.1B/seq-1024 尺度影响有限，留作后续消融；不重叠与 blockpath.CSACompressor
+   但参数翻倍，0.1B/seq-1024 尺度影响有限，留作后续消融；不重叠与 blockpath.BlockCompressor
    的定长块语义一致）。
 2. 重要性分数来源：NSA Eq.8–10，复用压缩注意力分数（分数参与压缩注意力训练，
    选择本身离散无梯度——本实现照此：top-k 索引无梯度，选中条目的注意力 logits
@@ -46,7 +46,7 @@ plan 要求 init 均等；NSA 原文只说 sigmoid MLP，未给初始化——�
    条目只对 >j 的 query 可见；看不到自己所在块内的其它 token（由滑窗分支补足局部）。
 
 KV cache（生成路径，原型级）：state 存**全量** k/v（[B,T,n_kv,hd] 布局，k 为 k_norm 后、
-**RoPE 前**——与 CSAAttention 存 RoPE 后不同，注意勿混用），每步由全量 cache 现算三分支
+**RoPE 前**——与 FullAttention 存 RoPE 后不同，注意勿混用），每步由全量 cache 现算三分支
 （O(L)/token，0.1B/seq 1024 可接受）。**生产路径应增量维护压缩/HCA 条目 cache**
 （V4 的 1M 下 10% KV 正由此来；HCA 区 = 滑窗原始 KV + 压缩条目，V4 §3.5.1）；原型的
 现算方式不改变前向数值语义（RoPE 只依赖绝对位置，压缩只依赖完整块内容）。
@@ -75,7 +75,7 @@ class ChunkCompressor(nn.Module):
     entry = Σ_j s_j ⊙ x_j。B_pos ∈ R^{stride×head_dim} 为学习块内位置偏置（V4 Eq.11，
     零初始化 = 初始无位置先验）；k、v 各一套投影/偏置，kv 头间共享（V4 为单序列
     MQA 式条目；本实现按 kv 头分别压缩、结构对齐）。
-    尾部策略：丢弃不足 stride 的尾部 token（floor(T/stride)，与 blockpath.CSACompressor
+    尾部策略：丢弃不足 stride 的尾部 token（floor(T/stride)，与 blockpath.BlockCompressor
     同纪律——定长块语义；被丢弃的尾部由滑窗分支以原始 k/v 覆盖）。
     """
 
@@ -104,7 +104,7 @@ class ChunkCompressor(nn.Module):
 class TriAttention(nn.Module):
     """三级注意力层：滑窗 + CSA 选择检索 + HCA 重压缩，学习门控融合（详见模块 docstring）。
 
-    forward 签名与 CSAAttention 一致（x, state, offset）→ (out, new_state)，供 Block 直接替换。
+    forward 签名与 FullAttention 一致（x, state, offset）→ (out, new_state)，供 Block 直接替换。
     state = {"k","v"}（[B,T,n_kv,hd]，k 为 k_norm 后 RoPE **前**）+ 可选 HCA 注入区
     （"hca_inj_k"/"hca_inj_v"，[B,n_kv,N,hd]）。
     aux：测试/仪表挂点——传入 dict 时填入分支输出/门控/选择掩码/参考用张量（默认 None 零开销）。
@@ -135,7 +135,7 @@ class TriAttention(nn.Module):
         # 避免被 model._init_weights 的 nn.Linear 规则覆盖 → init 精确均等 1/3，记录见 docstring）
         self.gate_w = nn.Parameter(torch.zeros(3, self.head_dim))
         self.gate_b = nn.Parameter(torch.full((3,), -math.log(2.0)))  # sigmoid(-ln2) = 1/3
-        # RoPE 缓存 [max_seq, head_dim/2]（与 CSAAttention 同一构造，half-split NeoX 风格）
+        # RoPE 缓存 [max_seq, head_dim/2]（与 FullAttention 同一构造，half-split NeoX 风格）
         inv_freq = 1.0 / (cfg.rope_theta ** (torch.arange(0, self.head_dim, 2).float() / self.head_dim))
         t = torch.arange(cfg.max_seq).float()
         freqs = torch.outer(t, inv_freq)
@@ -145,7 +145,7 @@ class TriAttention(nn.Module):
         self.layer_idx: int = -1
 
     def _rope(self, x: torch.Tensor, offset: int) -> torch.Tensor:
-        # x: [B, T, H, D]，half-split（NeoX 风格）旋转（与 CSAAttention._rope 同一实现）
+        # x: [B, T, H, D]，half-split（NeoX 风格）旋转（与 FullAttention._rope 同一实现）
         T = x.shape[1]
         cos = self.rope_cos[offset : offset + T]  # [T, D/2]
         sin = self.rope_sin[offset : offset + T]
@@ -241,7 +241,7 @@ class TriAttention(nn.Module):
         k_nope = k.transpose(1, 2)
         v = v.transpose(1, 2)
         rep = self.n_q // self.n_kv
-        # 绝对位置：query 右对齐（Tk-T..Tk-1），key 0..Tk-1（与 CSAAttention cache 语义一致）
+        # 绝对位置：query 右对齐（Tk-T..Tk-1），key 0..Tk-1（与 FullAttention cache 语义一致）
         i_abs = torch.arange(Tk - T, Tk, device=x.device)
         j_abs = torch.arange(Tk, device=x.device)
 
