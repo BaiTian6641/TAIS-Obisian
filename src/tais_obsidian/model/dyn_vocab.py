@@ -5,7 +5,8 @@
   提取 → concept_slot 注册（页表=动态词表 codebook）→ 输入侧注入（零风险）。
 - Kaplan《From Tokens to Words》（arXiv:2410.05864，ICLR 2025）：LLM 早期-中层天然
   detokenize，把多 token 碎片融合为词表示，对 OOV 同样成立；免微调提取 = 取概念多 token
-  序列末 token 在最早成功层 ℓ(≈5-15) 的 detokenized hidden state，**一次前向即得**。
+  序列末 token 在最早成功层 ℓ 的 detokenized hidden state，**一次前向即得**。
+  设计 §28.2 正式口径 = ℓ10–14（28 层 36–50% 深度，与 KAL 挂点同带）；ℓ5–15 为探索区间。
 - Over-Tokenized（ICML 2025）：输入词表↔loss log-linear、输入扩张**无条件正向**、
   输出扩张对小模型有害 → 第 0 级**输入侧免费、零风险**，输出侧暂不升格（tied embedding）。
 - 载体能力边界：concept_slot 为**位置不变向量**（输入侧"单槽理解"），非事实查表
