@@ -37,6 +37,7 @@ def ca1_gate(
     teacher_consensus: float,
     belief_drift: float,
     *,
+    salience_usage_boost: int = 0,
     min_usage: int = 10,
     min_consensus: float = 0.7,
     max_drift: float = 0.5,
@@ -46,9 +47,17 @@ def ca1_gate(
     规则（按序，前者优先）：
     1. 候选为空 → DROP；
     2. 信念漂移 > max_drift → QUARANTINE（MemoryGraft 信念腐蚀拦截，最优先拦截）；
-    3. usage_count < min_usage 或 regression_ok 为 False → REJECT（验证门）；
+    3. 有效 usage（usage_count + salience_usage_boost）< min_usage 或 regression_ok
+       为 False → REJECT（验证门）；
     4. teacher_consensus < min_consensus → REJECT（⭐ GATES 共识度）；
     5. 否则 → PROMOTE。
+
+    ⭐ arousal 写门（McGaugh 原理 / Payne&Kensinger 2018 编码时分子标签→睡眠选择性巩固）：
+    ``salience_usage_boost`` 是 KAL L2 arousal 显著性对**有效 usage** 的加成——高唤醒
+    经验编码时被打上显著性标签，睡眠期据此**优先巩固**（arousal 是巩固增益主驱动）。
+    **红线保持**：saliency 只加成巩固**优先级**（usage 维度），绝不触碰正确性维度
+    （regression_ok / consensus / drift 独立判定）——novelty ⊥ correctness 不可平均，
+    高显著不能掩盖错误/投毒（drift 拦截仍在最优先位）。valence 只调极性不进此门。
 
     注：novelty 与 correctness 独立判定、绝不平均（Kairos NORA 设计原则）。
     """
@@ -56,7 +65,8 @@ def ca1_gate(
         return DROP
     if belief_drift > max_drift:
         return QUARANTINE
-    if usage_count < min_usage or not regression_ok:
+    effective_usage = usage_count + max(0, salience_usage_boost)  # arousal 写门：显著性加成
+    if effective_usage < min_usage or not regression_ok:
         return REJECT
     if teacher_consensus < min_consensus:
         return REJECT

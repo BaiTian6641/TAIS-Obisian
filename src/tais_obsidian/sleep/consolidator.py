@@ -130,9 +130,13 @@ class SleepConsolidator:
     固化期锁定（lock_offline：DOWN 态=合并锁）。
     """
 
-    def __init__(self, ca1_thresholds: dict | None = None, cluster_gap: float = 600.0):
+    def __init__(self, ca1_thresholds: dict | None = None, cluster_gap: float = 600.0,
+                 salience_scale: float = 4.0):
         self.ca1_thresholds = ca1_thresholds or {}
         self.cluster_gap = cluster_gap
+        # arousal 写门增益：saliency 超出基线 1.0 的部分 × salience_scale = 有效 usage 加成
+        # （McGaugh 高唤醒优先巩固；默认 4.0，saliency=2.0 → +4 usage）。
+        self.salience_scale = salience_scale
         self._lock = False
 
     def lock_offline(self) -> None:
@@ -171,12 +175,17 @@ class SleepConsolidator:
                     rep.n_practiced += 1
                     item.regression_ok = ok
                     # CA1 验证门（novelty ⊥ correctness 不可平均）
+                    # ⭐ arousal 写门（McGaugh）：item.saliency（KAL L2 arousal 显著性，
+                    # 编码时分子标签）对有效 usage 加成——高唤醒经验睡眠期优先巩固；
+                    # saliency 只加成优先级，不触碰正确性判定（drift 拦截仍最优先）。
+                    salience_boost = int(round(max(0.0, item.saliency - 1.0) * self.salience_scale))
                     verdict = ca1_gate(
                         item,
                         regression_ok=item.regression_ok,
                         usage_count=item.usage_count,
                         teacher_consensus=item.teacher_consensus,
                         belief_drift=item.belief_drift,
+                        salience_usage_boost=salience_boost,
                         **self.ca1_thresholds,
                     )
                     if verdict == "PROMOTE":
