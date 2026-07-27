@@ -18,6 +18,7 @@ from .blockstore import BlockStore
 from .bus import MemoryBus
 from .ca1_gate import CA1Gate, ca1_gate
 from .ca3_ppr import ca3_ppr
+from .kernel_orchestrator import KernelOrchestrator, OrchestrateOut, RecallDecision, make_orchestrator
 from .pagetable import KNOWN_KINDS, BlockSpec, PageTable
 from .pager import Pager
 from .safety import SafetyPipeline, make_safety_pipeline, sign_block, verify_signature
@@ -30,6 +31,10 @@ __all__ = [
     "BlockStore",
     "Pager",
     "MemoryBus",
+    "KernelOrchestrator",
+    "OrchestrateOut",
+    "RecallDecision",
+    "make_orchestrator",
     "CA1Gate",
     "ca1_gate",
     "ca3_ppr",

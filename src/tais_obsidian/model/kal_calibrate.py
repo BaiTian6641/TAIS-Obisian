@@ -106,10 +106,14 @@ class ConformalGate:
         return self
 
     def accept(self, p_correct: np.ndarray) -> np.ndarray:
-        """p_correct ≥ threshold → True(accept/知道)，否则 False(reject/空白)。"""
+        """p_correct > threshold → True(accept/知道)，否则 False(reject/空白)。
+
+        严格大于（非 ≥）：当负类校准后 P(correct) 普遍≈0 时阈值≈0，若用 ≥ 则
+        P=0 也被误判 accept（漏报空白）。严格 > 保证"低置信即拒答"的诚实降级语义。
+        """
         if self.threshold_ is None:
             raise RuntimeError("gate 未 fit（fail-closed）")
-        return np.asarray(p_correct) >= self.threshold_
+        return np.asarray(p_correct) > self.threshold_
 
 
 def aurc(scores: np.ndarray, labels: np.ndarray) -> float:
