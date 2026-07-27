@@ -51,11 +51,14 @@ def test_conflict_triggers_steer_truth() -> None:
     assert (proj > 0).all(), "所有位置的 shift 应沿 +direction"
 
 
-def test_high_arousal_triggers_steer() -> None:
+def test_high_arousal_alone_no_steer() -> None:
+    # arousal 不独立触发（信号语义边界：中性文本 arousal 无校准，防误 steer）——
+    # 仅高唤醒无冲突时应 noop（arousal 仅作 conflict 触发的增益，非独立信号）。
     g = _gate()
     h = torch.randn(1, 4, D)
     out, action = g.apply(h, is_blank=False, arousal=0.9)
-    assert action == ITI_STEER_TRUTH
+    assert action == ITI_NOOP
+    assert torch.equal(out, h)
 
 
 def test_low_signal_noop() -> None:
@@ -89,5 +92,16 @@ def test_decide_pure() -> None:
     g = _gate()
     assert g.decide(is_blank=True) == ITI_ABSTAIN
     assert g.decide(is_blank=False, conflict_score=1.0) == ITI_STEER_TRUTH
-    assert g.decide(is_blank=False, arousal=0.9) == ITI_STEER_TRUTH
+    # arousal 不独立触发（信号语义边界）——仅高唤醒无冲突 = noop
+    assert g.decide(is_blank=False, arousal=0.9) == ITI_NOOP
     assert g.decide(is_blank=False) == ITI_NOOP
+
+
+def test_arousal_amplifies_conflict_alpha() -> None:
+    # arousal 增益：conflict 触发 steer_truth 时，高唤醒 α 大于低唤醒（McGaugh 显著性）。
+    g = _gate()
+    alpha_low = g._alpha_for(arousal=0.0)
+    alpha_high = g._alpha_for(arousal=0.95)
+    assert alpha_high > alpha_low, "高唤醒应增益 α"
+    assert alpha_low == g.truth_alpha_frac, "低唤醒用基础 α"
+    assert alpha_high <= g.iti.max_alpha_frac, "α 有界（不超 max）"

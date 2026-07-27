@@ -130,14 +130,35 @@ class ITIGate:
         conflict_score: float | None = None,
         arousal: float | None = None,
     ) -> str:
-        """门控判定（纯函数，fail-closed 倾向 noop/abstain——不确定时不盲目 steer）。"""
+        """门控判定（纯函数，fail-closed 倾向 noop/abstain——不确定时不盲目 steer）。
+
+        信号语义边界（2026-07-27 实证）：arousal 头在情感数据上训练，**仅在情感语境
+        可靠**——中性事实文本的 arousal 读数无校准（易误判高唤醒）。故 **arousal 不独立
+        触发 steer_truth**（防中性文本误 steer），仅作 conflict 触发的增益（高唤醒+冲突
+        时加强 α）；主触发靠 conflict（语义可靠）。这符合 McGaugh 原意：arousal 增强
+        显著性/优先级，非独立决策信号。
+        """
         if is_blank:
             return ITI_ABSTAIN  # 空白 → 诚实降级（绝不 steer 成 know）
         if conflict_score is not None and conflict_score > self.conflict_thresh:
-            return ITI_STEER_TRUTH  # L3 冲突 → 沿真值/参数知识方向 steer
-        if arousal is not None and arousal > self.arousal_thresh:
-            return ITI_STEER_TRUTH  # L2 高唤醒 → 增强（高显著场景）
+            return ITI_STEER_TRUTH  # L3 冲突 → 沿真值/参数知识方向 steer（arousal 增益见 apply）
         return ITI_NOOP
+
+    def _alpha_for(self, arousal: float | None) -> float:
+        """按 arousal 增益 steer 强度（高唤醒 → 更强 steer，McGaugh 显著性增强）。
+
+        arousal 仅增益不独立触发（信号语义边界）：conflict 触发 steer_truth 时，
+        高唤醒把 α 从 truth_alpha_frac 提升到 max_alpha_frac（线性插值）；无/低唤醒用基础 α。
+        """
+        base = self.truth_alpha_frac
+        if arousal is None:
+            return base
+        a = max(0.0, min(1.0, arousal))
+        # 高唤醒（>arousal_thresh）时线性增益到 iti.max_alpha_frac
+        if a <= self.arousal_thresh:
+            return base
+        gain = (a - self.arousal_thresh) / max(1e-6, 1.0 - self.arousal_thresh)
+        return base + gain * (self.iti.max_alpha_frac - base)
 
     def apply(
         self,
@@ -149,11 +170,12 @@ class ITIGate:
         """门控 + 应用：返回 (steer 后 hidden, 决策)。
 
         abstain/noop 不改 hidden（abstain 由编排层触发诚实降级，noop 零开销）；
-        steer_truth 沿真值方向有界 steer。
+        steer_truth 沿真值方向 steer，α 按 arousal 增益（高唤醒更强，McGaugh 显著性）。
         """
         action = self.decide(is_blank, conflict_score, arousal)
         if action == ITI_STEER_TRUTH:
-            return self.iti.steer_toward_truth(hidden, self.truth_alpha_frac), action
+            alpha = self._alpha_for(arousal)  # arousal 增益（不独立触发）
+            return self.iti.steer_toward_truth(hidden, alpha), action
         # abstain 与 noop 都不改 hidden（abstain 的拒答由编排层闭环处理，非 steer）
         return hidden, action
 
