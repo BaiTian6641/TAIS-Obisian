@@ -502,9 +502,15 @@ llama.cpp 已有 `GGML_OP_GATED_DELTA_NET` 算子与 Qwen3-Next converter；保�
 
 **注意**：旧 GDN-1 checkpoint 的 G 层权重（标量 b_proj）与 G2（channel-wise b/w_proj）形状不兼容——旧 checkpoint（pilot_0p1b_*）需 `from_pretrained(skip_keys)` 兼容或重训。新增 4 项 chunked 对拍测试（naive/tied/训练-生成路径一致）。
 
+**GDN-1 vs GDN-2 对比消融（2026-07-27，2000 步 pilot 同配方，诚实负结果+诊断）**：
+- **val loss**：GDN-1 **3.7586** vs GDN-2 **3.7600**（Δ+0.0014，GDN-1 略低但噪声内）——**GDN-2 同分布 LM 无劣势，可安全作默认**（参数 108.11M vs 115.99M，GDN-2 +7.9M channel-wise 门）。
+- **NIAH 检索**（8 key 干扰 100 查询，`eval_retrieval_niah.py`）：GDN-1 **0.200** vs GDN-2 **0.130**（GDN-2 反而劣）。
+- **根因诊断（非架构错误，是欠训练）**：GDN-2 的 channel-wise 门在 2000 步内**几乎未学到选择性**——erase b mean 0.503/坐标分化度 0.0244、write w mean 0.500/0.0193（≈初始 sigmoid(0)=0.5 均匀未分化）；b/w≈0.5 等效"半强度无差别擦写"，比 GDN-1 学到的标量 β（可学到接近 0/1 的明确强度）更弱。**关键差异**：NVIDIA 用 100B tokens 训练 GDN-2 的门有充足信号学会选择性擦除，我们 2000 步（~134M tokens）门未收敛。**前序语义对拍（手工设门）已证 GDN-2 erase gate 保护能力（−4.804→2.741）**，故检索劣势是**门欠训练**非架构缺陷。
+- **结论**：① GDN-2 切换在 val loss 无劣势（默认安全）；② **检索优势需 >2000 步训练让 channel-wise 门收敛**（NIAH 复测应随训练步数改善）；③ 门收敛诊断指标 = b/w 坐标分化度（std across dim，>0.05=学到选择性）。
+
 **当前最新 git**：main 已推远端（见仓库 log），177 项 pytest 全绿。
 
-**下一步（按优先级）**：① GDN-2 检索任务训练消融（GDN-1 vs GDN-2 全层 RULER/合成检索对比，验证全层训练收益）；② PM-stream 下端到端（正式读点，多流模型）；③ D-2 0.5B 对拍 + Muon 切换（设计 v2.5 纪律）；④ 内词典 T_E/T_U 精修（§28.4 第 1 级）；⑤ EXP-PERSONA 细稿（§8A）。
+**下一步（按优先级）**：① **GDN-2 门收敛验证**（延长训练/加检索监督让 channel-wise 门学会选择性，复测 NIAH——是 GDN-2 检索优势兑现的关键）；② PM-stream 下端到端（正式读点，多流模型）；③ D-2 0.5B 对拍 + Muon 切换（设计 v2.5 纪律）；④ 内词典 T_E/T_U 精修（§28.4 第 1 级）；⑤ EXP-PERSONA 细稿（§8A）。
 
 ---
 
