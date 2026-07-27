@@ -450,6 +450,27 @@ llama.cpp 已有 `GGML_OP_GATED_DELTA_NET` 算子与 Qwen3-Next converter；保�
 - 推理：vLLM 文档（Adding a New Model / LoRA / APC / Sleep Mode）；PyTorch 博客 "Hybrid Models as First-Class Citizens in vLLM"（2025-11）。
 - 评估：EleutherAI lm-evaluation-harness；RULER（长上下文）。
 
+### 12.4 M1–M8 落地与内核端到端闭环（2026-07-26 进度更新，**当前最新状态**）
+
+> 本节为最新开发日志：§12.3 的 M1–M8 清单**已全部落地**（143 项 pytest 全绿），并推进到**内核端到端运行时闭环**（KAL 元认知 + 动态词表 + HRL 全部整合）。以下逐条记录关键产出与实测判据。
+
+**M1–M8 全部达成**（详见《部件实现详细计划》§IV 退出标准，逐项达标）：
+- ~~M1 内核骨架~~ ✅ TAISKernel sense/route/inject；~~M2 KAL 内生~~ ✅ ℓ8 探针 AUROC 0.945；~~M3 HRL 内生~~ ✅ Indexer+DG+侧信道头簇梯度隔离；~~M4 运行时骨架~~ ✅ Bus+Pager+页表+BlockStore+state_ckpt（往返 <1e-5）；~~M5 注入闭环~~ ✅ KV 拼接+记忆层+向量（注入 Δ+0.0001 不降）；~~M6 睡眠固化~~ ✅ 分簇回放+间隔提取+CA1 门+SHY；~~M7 动态词表~~ ✅ concept_slot+注册；~~M8 安全管线~~ ✅ HMAC 签名+namespace+扫描器接口。
+
+**内核端到端运行时闭环（2026-07-26，本日新增）**：
+1. **注意力架构收敛**：删 attn_only 对照组，统一 **TriRetrievalAttention**（滑窗 L0+CSA L1+HCA L2+NSA 门控）；`tri_use_indexer` 经 **2000 步消融扶正**（NSA 5.3543 vs V4 5.3583，Δ+0.0041<0.02 不劣化、吞吐+1.4%），V4 式独立 LightningIndexer 转正为默认。
+2. **KAL 元认知闭环**：在线自标注 P(IK) 训出反方向（AUROC 0.433，伪标签=next-token 正确性测流畅度非真假——**诚实负结果**，正合 2606.02628）→ **真值锚微调**（fake=unknown/real=known）AUROC 0.447→1.000 → **多样化真值 v2**（contrast-pair+多句式+程序化虚构词）**OOD AUROC 1.000**（template 0.870）；**校准层**（isotonic+conformal）ECE 0.0002/AURC 0.063，`<|blank|>`/缺页声明有有限样本覆盖保证。
+3. **编排闭环**（`runtime/kernel_orchestrator.py`）：sense（校准 p_correct+conformal 空白门）→ **空白即诚实降级拒答** → 非空白 indexer route → Bus top-k → Pager fail-closed 取载荷 → Injector 注入。E2E：伪事实拒答✓、真实注入✓。
+4. **动态词表集成 + HRL 互动**：KAL 词表摩擦（高熵+高共现+低 P(IK)）→ concept_slot 注册（**修断点**：promote 现把向量存 BlockStore，原只存元数据无法注入）→ 注入向量路径前向；concept_slot 入 HRL route_graph 参与 CA3 PPR 联想检索。
+5. **内词典提取成功率 T1 观测（§28.4，诚实负面实证）**：0.1B 残差流 hidden state 与 tied embedding 空间**未对齐**（detokenized 向量最近 token 全功能词，无概念片段）——Kaplan 免微调提取在 0.1B 不成立，需 T_E/T_U 精修；**真实的 1.5B 未知项**（concept_slot 向量=steering 非事实查表，与 factual_recall=False 一致）。
+6. **训练效率加固**：`set_float32_matmul_precision("high")` + `cudnn.benchmark`（与既有 TF32 同族）。
+
+**当前最新 git**：main 已推远端（见仓库 log），143 项 pytest 全绿。
+
+**下一步（按优先级）**：① L2 情感头（VA 正交回归+arousal 写门接 CA1，T1 观测）；② 多层融合（ℓ10/14/18+AUROC 软加权）；③ PM-stream 下端到端；④ GDN-2 全层消融；⑤ D-2 0.5B 对拍 + Muon 切换。
+
+---
+
 ### 12.3 立即行动清单（2026-07-26 v0.5 重写，对齐 v2.5 文档体系与 M0–M8 链）
 
 1. ~~S0/S1/S2~~ ✅；~~E+ 原型序列与消融矩阵~~ ✅（M0 达成）；~~组合消融~~ ✅（3.743，相容——**1.5B config 默认候选 = 混合 + PM-stream ON + 三级栈 ON**，消融矩阵全表见 D-0 报告 §6.4）。
