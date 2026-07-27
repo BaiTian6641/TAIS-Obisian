@@ -35,12 +35,15 @@ from .bus import MemoryBus
 
 @dataclass
 class RecallDecision:
-    """一次 sense 的判定结果（诚实降级信号）。"""
+    """一次 sense 的判定结果（诚实降级信号 + KAL 三层感知，供 ITIGate 干预决策）。"""
 
     p_correct: float              # KAL L1 校准后的"知道"概率（末 token）
     is_blank: bool                # conformal 门判定为知识空白
     should_recall: bool           # 是否应触发回想/拒答（= is_blank）
     message: str = ""             # 诚实降级文案（空白时非空）
+    # KAL 三层感知（供 ITIGate 双刃剑门控）：L3 冲突 score（越大越冲突）、L2 arousal（越大越唤醒）
+    conflict_score: float = 0.0   # L3 冲突头末 token 激活（sigmoid 后，[0,1]）
+    arousal: float = 0.0          # L2 情感头末 token arousal 维（sigmoid 后，[0,1]）
 
 
 @dataclass
@@ -52,6 +55,7 @@ class OrchestrateOut:
     n_injected: int = 0                        # 实际注入的载荷数
     n_page_faults: int = 0                     # 本次取块的缺页数（fail-closed 丢弃数）
     routed_block_ids: list[str] = field(default_factory=list)
+    iti_action: str = "noop"                 # ITIGate 干预动作（abstain/steer_truth/noop）
 
 
 class KernelOrchestrator:
@@ -72,6 +76,7 @@ class KernelOrchestrator:
         gate=None,
         blank_message: str = "该部分记忆暂不可用（KAL 检测到知识空白，诚实降级）",
         dynamic_vocab=None,
+        iti_gate=None,
     ):
         self.kernel = kernel
         self.bus = bus
@@ -79,6 +84,9 @@ class KernelOrchestrator:
         self.calibrator = calibrator
         self.gate = gate
         self.blank_message = blank_message
+        # ITI 干预门（KAL 执行通道，model/iti_head.ITIGate）：双刃剑门控——
+        # L1 空白→abstain（诚实降级）、L3 冲突/L2 高唤醒→steer_toward_truth、低信号→noop。
+        self.iti_gate = iti_gate
         # 动态词表（M7）：KAL 词表摩擦感知 → concept_slot 注册（KAL 动态感知已学内容）。
         # dynamic_vocab = dyn_vocab.DynamicVocab（extract_fn 须已注入 Kaplan 提取回调）。
         self.dynamic_vocab = dynamic_vocab
@@ -130,6 +138,9 @@ class KernelOrchestrator:
         with torch.no_grad():
             sense = self.kernel.sense(pm_out)
         logits = sense.pik_logits.detach()  # [B,T,3]
+        # L3 冲突 / L2 唤醒信号（供 ITIGate；sigmoid 归一到 [0,1]，末 token）
+        conflict = torch.sigmoid(sense.conflict_logit.detach()[:, -1, :].float().mean(dim=-1))[0].item()
+        arousal = torch.sigmoid(sense.affect_logits.detach()[:, -1, 1].float())[0].item()  # dim1=arousal
         # 末 token 的"知道 vs 空白"对数几率（与 train/eval 口径一致）
         last = logits[:, -1, :].float()  # [B,3]
         raw_score = (last[:, 0] - last[:, 2]).cpu().numpy()  # [B]
@@ -149,6 +160,8 @@ class KernelOrchestrator:
             is_blank=is_blank,
             should_recall=is_blank,
             message=self.blank_message if is_blank else "",
+            conflict_score=float(conflict),
+            arousal=float(arousal),
         )
 
     # ------------------------------------------------------------------
@@ -253,7 +266,17 @@ class KernelOrchestrator:
         """
         decision = self.sense_gate(pm_out)
         if decision.should_recall:
-            return OrchestrateOut(decision=decision, injected_pm=None, n_injected=0)
+            # 空白 → abstain（诚实降级，绝不 steer 成 know——ITIGate 双刃剑门控）
+            return OrchestrateOut(decision=decision, injected_pm=None, n_injected=0,
+                                  iti_action="abstain")
+
+        # 非空白：ITIGate 用 L3 冲突/L2 唤醒信号决定是否沿真值方向 steer（监测→门控→干预）。
+        # steer 写 pm_pre（CSA 残差前层，监测/执行分置的写入点）； noop/abstain 不改。
+        iti_action = "noop"
+        if self.iti_gate is not None:
+            pm_pre, iti_action = self.iti_gate.apply(
+                pm_pre, is_blank=False,
+                conflict_score=decision.conflict_score, arousal=decision.arousal)
 
         payloads: list = []
         top_ids: list[str] = []
@@ -265,14 +288,15 @@ class KernelOrchestrator:
 
         if not payloads:
             return OrchestrateOut(decision=decision, injected_pm=None, n_injected=0,
-                                  n_page_faults=n_faults, routed_block_ids=top_ids)
+                                  n_page_faults=n_faults, routed_block_ids=top_ids,
+                                  iti_action=iti_action)
         # 设备/dtype 对齐（防御加固）：BlockStore 载荷可能在 CPU，pm_pre 在 CUDA——
         # 注入前把 vector/entries 对齐到 pm_pre 设备与 dtype，避免 RuntimeError。
         payloads = [self._align_payload(p, pm_pre) for p in payloads]
         injected = self.kernel.inject(pm_pre, payloads, alphas=alphas, injector=self.injector)
         return OrchestrateOut(decision=decision, injected_pm=injected,
                               n_injected=len(payloads), n_page_faults=n_faults,
-                              routed_block_ids=top_ids)
+                              routed_block_ids=top_ids, iti_action=iti_action)
 
     # ------------------------------------------------------------------
     @staticmethod
