@@ -44,11 +44,16 @@ class DynamicVocab:
     - ``inject_vector``：返回输入侧向量（内核 inject() 向量路径用）。
     """
 
-    def __init__(self, pagetable: PageTable, namespace: tuple, extract_fn=None, friction_thresh: float = 0.6):
+    def __init__(self, pagetable: PageTable, namespace: tuple, extract_fn=None,
+                 friction_thresh: float = 0.6, blockstore=None):
         self.pagetable = pagetable
         self.namespace = namespace
         self.extract_fn = extract_fn  # fn(text) -> Tensor [d]（Kaplan ℓ5-15 hidden state）
         self.friction_thresh = friction_thresh
+        # 块载荷存储（M4 BlockStore）：promote 注册后把 concept 向量存为 BlockPayload，
+        # 使概念可被 Pager fail-closed 检索、经内核 inject 向量路径注入（注册→检索→注入闭环）。
+        # 不给时仅注册元数据（向后兼容，向量由调用方自存）。
+        self.blockstore = blockstore
 
     def detect(self, entropy: float, p_ik: float, repeat_cooccur: float) -> bool:
         """词表摩擦超阈即候选。"""
@@ -77,9 +82,21 @@ class DynamicVocab:
         return spec
 
     def promote(self, text: str) -> BlockSpec:
-        """检测→提取→注册 一步到位（零梯度）。"""
+        """检测→提取→注册→（可选）载荷入 BlockStore 一步到位（零梯度）。
+
+        挂 blockstore 时，把 concept 向量存为 BlockPayload（concept_slot，位置不变向量），
+        使概念可被 Pager 检索、经内核 inject 向量路径注入——打通 注册→检索→注入 闭环。
+        """
         vec = self.extract(text)
-        return self.register(text, vec)
+        spec = self.register(text, vec)
+        if self.blockstore is not None:
+            from .tais_kernel import BlockPayload
+            self.blockstore.put(
+                spec.block_id,
+                BlockPayload(block_id=spec.block_id, compiled_kind="concept_slot",
+                             vector=vec, layer_ns=self.namespace),
+            )
+        return spec
 
 
 def make_dynamic_vocab(pagetable: PageTable, namespace: tuple, extract_fn=None, **kw) -> DynamicVocab:
