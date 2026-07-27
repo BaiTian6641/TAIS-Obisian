@@ -1,0 +1,20 @@
+{
+  "run_name": "pilot_0p1b_gdn2_10k",
+  "seed": 42,
+  "out_dir": "checkpoints/pilot_0p1b_gdn2_10k",
+  "data_dir": "data/shards",
+  "seq_len": 1024,
+  "max_steps": 10000,
+  "micro_batch": 16,
+  "grad_accum": 4,
+  "lr": 0.001,
+  "warmup": 500,
+  "decay_frac": 0.2,
+  "weight_decay": 0.1,
+  "grad_clip": 1.0,
+  "val_every": 500,
+  "val_batches": 20,
+  "log_every": 50,
+  "ckpt_every": 1000,
+  "_comment": "GDN-2 10k 步训练（~0.65B tokens，~6:1 tokens:param）——让 channel-wise erase/write 门充分收敛（2000 步门未分化 b/w≈0.5，检索劣势是欠训练非架构缺陷；NVIDIA 用 100B tokens 门收敛，我们加长到 10k 步验证门收敛→NIAH 检索反超）。warmup 500/decay_frac 0.2 适配长程 schedule。GDN-2 默认 G2G2G2A + tri_use_indexer True。"
+}
