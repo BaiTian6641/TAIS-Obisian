@@ -217,7 +217,9 @@ class SideChannelHeads(nn.Module):
     def __init__(self, d_model: int):
         super().__init__()
         self.write_salience = nn.Linear(d_model, 1)   # 惊讶度 KL 阈值→W0 加标
-        self.conflict = nn.Linear(d_model, 1)          # 块-上下文矛盾（远期占位）
+        # L3 冲突头三态（一致/参数优先/上下文优先，规范 §4 + 2410.16090 中层残差流探针）；
+        # 2026-07 由 Linear(d,1) 单 logit 占位升级为三态 logistic，供真值微调写入随 checkpoint。
+        self.conflict = nn.Linear(d_model, 3)
         self.prefetch = nn.Linear(d_model, 1)          # 预取（远期占位）
         self.attribution = nn.Linear(d_model, 2)       # 注入质量/usage（远期占位）
         self.assoc = nn.Linear(d_model, 1)             # 联想触发（远期占位）

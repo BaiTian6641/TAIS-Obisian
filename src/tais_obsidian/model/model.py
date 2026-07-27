@@ -237,18 +237,42 @@ class TaisObsidianForCausalLM(nn.Module):
         dir: str | Path,
         device: str | torch.device = "cpu",
         strict: bool = True,
+        skip_keys: tuple[str, ...] = (),
     ) -> "TaisObsidianForCausalLM":
         """加载 checkpoint。**strict=False 兼容模式**：允许缺失/多余键——
         旧 checkpoint（attn_impl=full 时代的 CSAAttention 权重）在新架构
         （TriRetrievalAttention 三级栈，含 csa_comp/hca_comp/gate_w/gate_b 新参数）
         下结构不同；strict=False 时旧主干权重（embedding/GDN/MLP/注意力 q/k/v/o_proj）
-        仍载入，新三级栈参数随机初始化（供后续微调）。默认 strict=True（同架构往返）。"""
+        仍载入，新三级栈参数随机初始化（供后续微调）。默认 strict=True（同架构往返）。
+
+        ``skip_keys``（strict=True 时仍生效）：加载前剔除以这些前缀开头的键——
+        用于**形状演进**的部件（如 side_heads.conflict 由 Linear(d,1) 升级 Linear(d,3)），
+        旧形状权重无法 strict 载入，剔除后该部件随机初始化待微调，其余权重严格载入。
+        """
         from safetensors.torch import load_file
 
         dir = Path(dir)
         cfg = ModelConfig.from_json(dir / "config.json")
         model = cls(cfg)
         sd = load_file(str(dir / "model.safetensors"))
+        if skip_keys:
+            skipped = [k for k in sd if any(k.startswith(p) for p in skip_keys)]
+            for k in skipped:
+                del sd[k]
+            # 用当前模型的随机初始化值填补被剔除的键——strict=True 要求所有模型键有值，
+            # 剔除的旧形状键由新形状的随机初始化顶替（待后续微调），保证 strict 载入通过。
+            cur = model.state_dict()
+            for k in cur:
+                if any(k.startswith(p) for p in skip_keys) and k not in sd:
+                    sd[k] = cur[k]
+            if skipped:
+                print(f"[from_pretrained] skip_keys 剔除 {len(skipped)} 键（形状演进部件随机初始化顶替）："
+                      f"{[k for k in skipped[:3]]}{'...' if len(skipped) > 3 else ''}")
+        # strict=False 时还需过滤形状不匹配的键（load_state_dict 对形状冲突仍报错）：
+        # 仅保留与当前模型形状一致的键（缺失/多余/形状冲突键均跳过）。
+        if not strict:
+            cur = model.state_dict()
+            sd = {k: v for k, v in sd.items() if k in cur and cur[k].shape == v.shape}
         missing, unexpected = model.load_state_dict(sd, strict=strict)
         if not strict and (missing or unexpected):
             print(f"[from_pretrained] 兼容模式：missing {len(missing)} 键（新参数随机初始化），"

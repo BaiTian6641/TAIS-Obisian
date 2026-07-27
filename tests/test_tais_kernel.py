@@ -51,7 +51,7 @@ def test_sense_shapes_and_zero_side_effect(kernel: TAISKernel) -> None:
     assert out.pik_logits.shape == (2, 7, 3)      # L1 三态
     assert out.affect_logits.shape == (2, 7, 2)   # L2 情感（valence/arousal）
     assert out.write_salience.shape == (2, 7, 1)
-    assert out.conflict_logit.shape == (2, 7, 1)
+    assert out.conflict_logit.shape == (2, 7, 3)  # L3 冲突三态（一致/参数/上下文）
     # 零副作用：输入张量不被修改（监测=只读，设计 §8.2 读 hidden state 成本≈0）
     assert torch.equal(pm, pm_copy), "sense() 修改了输入张量（违反只读监测红线）"
 
