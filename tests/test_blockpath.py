@@ -116,7 +116,7 @@ def check_inject_incremental(device: str) -> None:
         g_before = {
             i: {k: v.clone() for k, v in cache["layers"][i].items()}
             for i, t in enumerate(cfg.layer_types)
-            if t == "G"
+            if t in ("G", "G2")  # GDN 系（GDN-1/GDN-2）state 均不动（无 KV cache）
         }
         pos_before = cache["pos"]
         cache2 = inject_block_kv(cache, blk, cfg)

@@ -16,6 +16,7 @@ import torch.nn.functional as F
 from ..config import ModelConfig
 from .common import RMSNorm
 from .gdn import GDNBlock
+from .gdn2 import GDN2Block
 from .pmstream import PMStreamMix
 from .tais_kernel import TAISKernel
 from .tri_attention import TriRetrievalAttention
@@ -46,6 +47,10 @@ class Block(nn.Module):
         self.norm1 = RMSNorm(cfg.d_model, cfg.rms_eps)
         if layer_type == "G":
             self.mixer = GDNBlock(cfg)
+        elif layer_type == "G2":
+            # GDN-2 层（erase/write 解耦，arXiv:2605.22791）：NVIDIA 论文实证优于 GDN-1
+            # （RULER 检索大幅领先）；tied 退化=GDN-1（严格一般化）。2026-07-27 采纳切换。
+            self.mixer = GDN2Block(cfg)
         else:
             # "A" 层统一为 TriRetrievalAttention（三级检索注意力，DeepSeek V4/NSA 谱系）；
             # 2026-07 起移除旧 RetrievalAttention 占位与 attn_only 对照组。
@@ -138,7 +143,8 @@ class TaisObsidianForCausalLM(nn.Module):
         """
         if self.config.kernel_sense_layers:
             return list(self.config.kernel_sense_layers)
-        return [i for i, t in enumerate(self.config.layer_types) if t == "G"]
+        # GDN 系层（"G"=GDN-1，"G2"=GDN-2）均为 KAL sense 读点（递归状态 W-State）
+        return [i for i, t in enumerate(self.config.layer_types) if t in ("G", "G2")]
 
     @staticmethod
     def _init_weights(m: nn.Module) -> None:
@@ -195,8 +201,8 @@ class TaisObsidianForCausalLM(nn.Module):
                 new_states.append(nst)
                 if capture_set is not None and i in capture_set:
                     captures[i] = {"content": S[:, :, 0, :], "pm": S[:, :, -1, :]}
-                # 监测只读（GDN 输出 PM-stream）：在该 GDN 层后感知
-                if use_kernel and (sense_layers is None or i in sense_layers) and layer.type == "G":
+                # 监测只读（GDN 输出 PM-stream）：在该 GDN 层后感知（"G"/"G2" 均为 GDN 系）
+                if use_kernel and (sense_layers is None or i in sense_layers) and layer.type in ("G", "G2"):
                     kernel_signals[i] = {"sense": self.kernel.sense(S[:, :, -1, :])}
             x = S.mean(dim=2)
         else:
@@ -210,7 +216,7 @@ class TaisObsidianForCausalLM(nn.Module):
                 new_states.append(nst)
                 if capture_set is not None and i in capture_set:
                     captures[i] = x
-                if use_kernel and (sense_layers is None or i in sense_layers) and layer.type == "G":
+                if use_kernel and (sense_layers is None or i in sense_layers) and layer.type in ("G", "G2"):
                     kernel_signals[i] = {"sense": self.kernel.sense(x)}
         x = self.norm_f(x)
         logits = F.linear(x, self.embed.weight)  # tied lm_head

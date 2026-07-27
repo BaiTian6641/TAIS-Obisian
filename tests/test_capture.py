@@ -49,7 +49,8 @@ def check_backward_compat(model: TaisObsidianForCausalLM, device: str) -> None:
 def check_capture_matches_hooks(model: TaisObsidianForCausalLM, device: str) -> None:
     """捕获全部 4 层：形状 [B,T,d]，数值与 register_forward_hook 参考逐点一致。"""
     types = [layer.type for layer in model.layers]
-    assert set(types) == {"G", "A"}, f"tiny 配置应同时覆盖 G/A 层，实际 {types}"
+    # GDN 系（"G"/"G2"）+ 注意力（"A"）；GDN-2 切换后 tiny 默认 G2G2G2A
+    assert set(types) <= {"G", "G2", "A"} and "A" in types, f"tiny 配置应覆盖 GDN 系/A 层，实际 {types}"
     torch.manual_seed(0)
     ids = torch.randint(0, 512, (2, 24), device=device)
     refs: dict[int, torch.Tensor] = {}

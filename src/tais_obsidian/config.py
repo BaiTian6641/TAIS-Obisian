@@ -10,13 +10,17 @@ from pathlib import Path
 class ModelConfig:
     """TAIS Obsidian 模型配置（D-0 级 0.1B 先导默认值）。
 
-    block_pattern 循环重复至 n_layer；"G"=GDN 层，"A"=CSA 全注意力层。
+    block_pattern 循环重复至 n_layer；"G"=GDN-1 层，"G2"=GDN-2 层（erase/write 解耦，
+    arXiv:2605.22791，2026-07-27 起为默认——NVIDIA 论文实证优于 GDN-1，RULER 检索大幅
+    领先，tied 退化=GDN-1 严格一般化），"A"=TriRetrievalAttention 三级检索注意力层。
     """
 
     vocab_size: int = 32768
     d_model: int = 768
     n_layer: int = 12
-    block_pattern: list[str] = field(default_factory=lambda: ["G", "G", "G", "A"])
+    # GDN-2 为默认（erase/write 解耦）；旧 GDN-1 checkpoint 经 from_pretrained(skip_keys)
+    # 兼容（GDN2Block 的 b_proj key_dim/w_proj value_dim 与 GDNBlock 标量 b_proj 形状不同）。
+    block_pattern: list[str] = field(default_factory=lambda: ["G2", "G2", "G2", "A"])
     # CSA 注意力
     n_q_heads: int = 12
     n_kv_heads: int = 4
@@ -66,9 +70,10 @@ class ModelConfig:
 
     @property
     def layer_types(self) -> list[str]:
-        """展开后的逐层类型列表，长度为 n_layer（"G"=GDN-MemBlock，"A"=TriRetrievalAttention）。"""
+        """展开后的逐层类型列表，长度为 n_layer（"G"=GDN-1，"G2"=GDN-2 erase/write 解耦，
+        "A"=TriRetrievalAttention）。"""
         types = [self.block_pattern[i % len(self.block_pattern)] for i in range(self.n_layer)]
-        assert all(t in ("G", "A") for t in types), f"未知层类型: {types}"
+        assert all(t in ("G", "G2", "A") for t in types), f"未知层类型: {types}"
         return types
 
     def to_json(self, path: str | Path) -> None:
