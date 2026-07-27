@@ -467,7 +467,27 @@ llama.cpp 已有 `GGML_OP_GATED_DELTA_NET` 算子与 Qwen3-Next converter；保�
 
 **当前最新 git**：main 已推远端（见仓库 log），143 项 pytest 全绿。
 
-**下一步（按优先级）**：① L2 情感头（VA 正交回归+arousal 写门接 CA1，T1 观测）；② 多层融合（ℓ10/14/18+AUROC 软加权）；③ PM-stream 下端到端；④ GDN-2 全层消融；⑤ D-2 0.5B 对拍 + Muon 切换。
+---
+
+### 12.5 KAL 三层元认知 + ITI 干预闭环全部落地（2026-07-27 进度更新，**当前最新状态**）
+
+> 本节续 §12.4：KAL 分层元认知（L1/L2/L3）+ ITI 干预执行通道**全部落地**（168 项 pytest 全绿），并经真实统一 checkpoint 端到端验证。规范文档 `article_ref/07_kal_math_engineering_spec.md`（4 子代理文献核实整合）。
+
+**KAL 三层元认知（全部真值锚训练，统一 checkpoint `final_unified`）**：
+1. **L1 P(IK)（知识空白检测）**：真值锚（fake=unknown/real=known，**绝不用 next-token 正确性**——实测错位 0.433）+ **多样化真值 v2**（contrast-pair 三元组+多句式+程序化虚构词）**OOD AUROC 1.000**（template 0.870）；**校准层**（isotonic+conformal 拒答阈值）ECE 0.0002/AURC 0.063，`<|blank|>` 有有限样本覆盖保证；**多层融合**（ℓ4/8/10 各头 + AUROC 软加权）——自动屏蔽错位头、OOD 兜底 +0.017。
+2. **L2 情感（valence/arousal）**：VA 正交回归（W 两列正交约束），dair-ai/emotion 上 **valence/arousal AUROC 均 >0.92**、近正交 circumplex——**VA 线性子空间在 0.1B 即成立**（反驳 M2 弱预期 0.60-0.65，与 Anthropic/Sun 大模型一致）；**arousal 写门接 CA1 巩固**（McGaugh 落地：高唤醒经验睡眠期优先巩固，saliency 只加成优先级不触碰正确性、drift 拦截仍最优先）。
+3. **L3 冲突（三态 logistic）**：side_heads.conflict 升级 Linear(d,1)→Linear(d,3)（一致/参数优先/上下文优先，写入内核随 checkpoint）；合成 context-memory 冲突 **三态 acc 0.406→1.000**、各类 AUROC consistent 0.994/param 1.000/ctx 1.000；OOD 泛化 0.667（方向判别稳健，一致态边界）。
+
+**ITI 干预执行通道（双刃剑门控，文献确认）**：
+- **ITIHead**：方向=kal_l1 真值方向（diff-in-means，cos know=0.988/blank=−0.989），非可学习防错位；α 有界（Braun 2505.22637 红线）。
+- **ITIGate 条件触发门**（双刃剑，tavily 文献补强：非识别性 2602.06801 / 门控形式 2602.01654 / 校准副作用 SteerConf 2503.02863+OPIUM 2607.19806 / 拒答方向 2406.11717）：**L1 空白→abstain（绝不 steer 成 know=造假）/ L3 冲突→steer_toward_truth / 低信号→noop**；**arousal 不独立触发**（信号语义边界：中性文本 arousal 无校准，仅作 conflict 的 α 增益）。
+- **编排闭环集成**：orchestrator sense（三层信号）→ ITIGate 决策 → 干预。E2E（final_unified）：真实一致 noop、冲突文本（conflict 0.73）steer_truth、伪事实 blank abstain、高唤醒情感 steer_truth——**双刃剑门控端到端正确**。
+
+**关键工程教训（已记记忆）**：① **多头微调须在同一基座累积**（否则 checkpoint 碎片、信号互相矛盾——final_unified = diverse L1 真值 + L3 + L2 累积）；② **信号须按语义边界使用**（arousal 仅情感语境可靠，主触发靠 conflict）；③ **from_pretrained skip_keys**（strict=True 下剔除形状演进键，conflict 1 态→3 态）。
+
+**当前最新 git**：main 已推远端（见仓库 log），168 项 pytest 全绿。
+
+**下一步（按优先级）**：① PM-stream 下端到端（正式读点，多流模型——KAL 在 PM 架构的正式形态）；② GDN-2 全层消融（独立主线，T1/T2）；③ D-2 0.5B 对拍 + Muon 切换（设计 v2.5 纪律）；④ 内词典 T_E/T_U 精修（§28.4 第 1 级，针对 0.1B hidden 未对齐负面发现）；⑤ EXP-PERSONA 细稿（§8A）。
 
 ---
 
