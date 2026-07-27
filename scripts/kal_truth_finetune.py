@@ -51,16 +51,28 @@ def collect_hidden(model, id_list, layer, device, batch_size, pooling):
     return feats[layer]
 
 
-def make_batch(tok, val_shards, rng, n_each, T, layer, model, device, batch_size, pooling):
-    """构造一批真值样本：n_each 条 known(val) + n_each 条 fake(伪事实)，编码→hidden→标签。
+def make_batch(tok, val_shards, rng, n_each, T, layer, model, device, batch_size, pooling,
+               data_source: str = "template"):
+    """构造一批真值样本：n_each 条 known + n_each 条 unknown，编码→hidden→标签。
+
+    data_source：
+    - "template"：known=val 分布内文本，unknown=kal_probe 8 类长模板伪事实（v1，模板同分布）；
+    - "diverse"：known/unknown 经 diverse_truth_data 多样化生成（多句式短句/疑问/否定/
+      contrast-pair + 程序化虚构词 + 真实事实句），解决 v1 的 OOD 泛化短板（规范 §7.2）。
 
     返回 (hidden [2*n_each, d]（no_grad 提取）, labels [2*n_each]（known=0/unknown=2）)。
     """
-    x, _ = val_shards.get_batch(n_each, T, "cpu", rng)
-    known_ids = x.numpy().tolist()
-    fake_ids = kp.encode_fixed(tok, kp.build_fake_fact_texts(rng, n_each), T)
-    ids = known_ids + fake_ids
-    labels = np.array([0] * n_each + [2] * n_each, dtype=np.int64)  # 0=知道, 2=空白
+    if data_source == "diverse":
+        import diverse_truth_data as dt
+        texts, labels_np = dt.build_diverse_truth_dataset(rng, n_each, n_each)
+        ids = kp.encode_fixed(tok, texts, T)
+        labels = labels_np
+    else:  # template（v1）
+        x, _ = val_shards.get_batch(n_each, T, "cpu", rng)
+        known_ids = x.numpy().tolist()
+        fake_ids = kp.encode_fixed(tok, kp.build_fake_fact_texts(rng, n_each), T)
+        ids = known_ids + fake_ids
+        labels = np.array([0] * n_each + [2] * n_each, dtype=np.int64)  # 0=知道, 2=空白
     hidden = collect_hidden(model, ids, layer, device, batch_size, pooling)
     return torch.from_numpy(hidden).to(device), torch.from_numpy(labels).to(device)
 
@@ -82,6 +94,8 @@ def main() -> None:
     ap.add_argument("--batch_size", type=int, default=16)
     ap.add_argument("--eval_every", type=int, default=100)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--data_source", choices=["template", "diverse"], default="template",
+                    help="template=v1 模板伪事实（同分布）；diverse=v2 多样化真值（OOD 鲁棒，规范 §7.2）")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
 
@@ -136,7 +150,8 @@ def main() -> None:
             g["lr"] = lr
         opt.zero_grad(set_to_none=True)
         hidden, labels = make_batch(tok, val_shards, rng, args.n_each, args.seq_len,
-                                    layer, model, args.device, args.batch_size, args.pooling)
+                                    layer, model, args.device, args.batch_size, args.pooling,
+                                    data_source=args.data_source)
         logits = head(hidden)  # [B,3]（hidden 已 detach 提取，梯度只进 head）
         ce = F.cross_entropy(logits.float(), labels)
         ce.backward()
