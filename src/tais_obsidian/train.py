@@ -200,13 +200,18 @@ def main() -> None:
 
     # pm_stream/pm_constrain 缺省 = 1/True（单流基线零改动）；PM 消融在 config JSON 中加 "pm_stream": 5
     model_cfg = ModelConfig(
+        # block_pattern 缺省 = ModelConfig 默认 G2G2G2A（GDN-2，2026-07-27 切换）；
+        # config JSON 可显式 "block_pattern": ["G","G","G","A"] 做 GDN-1 消融对照。
+        block_pattern=cfg.get("block_pattern", ["G2", "G2", "G2", "A"]),
         pm_stream=cfg.get("pm_stream", 1),
         pm_constrain=cfg.get("pm_constrain", True),
         tri_window=cfg.get("tri_window", 512),
         tri_csa_stride=cfg.get("tri_csa_stride", 4),
         tri_csa_topk=cfg.get("tri_csa_topk", 128),
         tri_hca_stride=cfg.get("tri_hca_stride", 128),
-        tri_use_indexer=cfg.get("tri_use_indexer", False),
+        # tri_use_indexer 默认对齐 ModelConfig 扶正值 True（2000 步消融扶正的 V4 正式路径）；
+        # config JSON 可显式 "tri_use_indexer": false 做 NSA 消融对照。
+        tri_use_indexer=cfg.get("tri_use_indexer", True),
         tri_index_heads=cfg.get("tri_index_heads", 4),
         tri_index_dim=cfg.get("tri_index_dim", 32),
         kernel_enabled=cfg.get("kal_aux_weight", 0.0) > 0.0,
