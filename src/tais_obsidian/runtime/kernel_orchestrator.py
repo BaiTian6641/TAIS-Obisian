@@ -82,6 +82,42 @@ class KernelOrchestrator:
         # 动态词表（M7）：KAL 词表摩擦感知 → concept_slot 注册（KAL 动态感知已学内容）。
         # dynamic_vocab = dyn_vocab.DynamicVocab（extract_fn 须已注入 Kaplan 提取回调）。
         self.dynamic_vocab = dynamic_vocab
+        # HRL 块图（route_graph，Part C4）：邻接表 {block_id: [后继 block_id]}，供 CA3 PPR
+        # 联想检索。concept_slot 注册后作为节点入图（动态词表 ↔ HRL 互动），与语义相关块连边。
+        self.route_graph: dict[str, list[str]] = {}
+
+    # ------------------------------------------------------------------
+    def register_block_to_graph(self, block_id: str, neighbor_ids: list[str] | None = None) -> None:
+        """把块接入 HRL route_graph（邻接表），与邻居连边（双向）。
+
+        concept_slot / 知识块注册后调用，使其参与 CA3 PPR 联想检索（HippoRAG 式多跳）。
+        邻居可为空（先作孤立节点，后续按 route_key 语义/坐标邻近补边）。
+        """
+        self.route_graph.setdefault(block_id, [])
+        for nb in (neighbor_ids or []):
+            if nb not in self.route_graph[block_id]:
+                self.route_graph[block_id].append(nb)
+            self.route_graph.setdefault(nb, [])
+            if block_id not in self.route_graph[nb]:
+                self.route_graph[nb].append(block_id)
+
+    def associative_recall(
+        self,
+        seed_scores: dict[str, float],
+        alpha: float = 0.1,
+        iters: int = 20,
+        top_k: int | None = None,
+    ) -> dict[str, float]:
+        """CA3 PPR 联想检索（HippoRAG 式）：Indexer 分数作种子在 route_graph 上扩散。
+
+        seed_scores {block_id: score}（Indexer 打分）；返回全可达块的扩展分数
+        （含 concept_slot 等已入图节点），实现多跳/类比联想。top_k 截断返回前 k。
+        """
+        from .ca3_ppr import ca3_ppr
+        out = ca3_ppr(seed_scores, self.route_graph, alpha=alpha, iters=iters)
+        if top_k is not None and top_k > 0:
+            return dict(sorted(out.items(), key=lambda kv: kv[1], reverse=True)[:top_k])
+        return out
 
     # ------------------------------------------------------------------
     def sense_gate(self, pm_out: torch.Tensor) -> RecallDecision:
@@ -139,9 +175,36 @@ class KernelOrchestrator:
             return False
         try:
             self.dynamic_vocab.promote(text)  # extract(Kaplan) → register(concept_slot)
+            # 动态词表 ↔ HRL 互动：concept_slot 注册后接入 HRL route_graph（作 CA3 PPR
+            # 联想检索的可达节点），与同页表内已注册块按 route_key 共现粗连边（骨架；
+            # 正式按语义/坐标邻近，Part C4）。
+            self.register_block_to_graph(f"concept/{text}", self._semantic_neighbors(text))
             return True
         except (RuntimeError, ValueError):
             return False  # 提取/注册失败 fail-closed（extract_fn 未注入等）
+
+    # ------------------------------------------------------------------
+    def _semantic_neighbors(self, text: str, max_n: int = 3) -> list[str]:
+        """concept_slot 的语义邻居（骨架）：页表 query_by_route_key 内容寻址检索相关块。
+
+        正式实现应按 route_key 嵌入相似度 / DG 稀疏 key / 坐标邻近（Part C4 TEM 结构泛化）；
+        骨架用 route_key 子串匹配（取概念首个 ≥4 字符的词作查询）作最低限度连边，
+        保证 concept_slot 入图非孤立、可被 PPR 扩散到达。fail-closed：无匹配返回空（孤立节点）。
+        """
+        pt = self.bus.pagetable
+        # 取概念中首个 ≥4 字符的 token 作 route_key 子串查询（虚构专名通常长词）
+        tokens = [t for t in text.replace("/", " ").split() if len(t) >= 4]
+        nbrs: list[str] = []
+        for tok in tokens:
+            try:
+                for spec in pt.query_by_route_key(tok):
+                    if spec.block_id != f"concept/{text}" and spec.block_id not in nbrs:
+                        nbrs.append(spec.block_id)
+                    if len(nbrs) >= max_n:
+                        return nbrs
+            except Exception:
+                continue  # 页表查询异常 fail-closed（跳过该 token）
+        return nbrs
 
     # ------------------------------------------------------------------
     def route_blocks(
