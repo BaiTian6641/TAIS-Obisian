@@ -39,6 +39,15 @@ M2 事后探针 **0.945**（fake 0.979）→ 在线自标注 **0.433**（伪标�
 - **形式**：top-K 头 mass-mean shift $h \leftarrow h+\alpha(\mu^+-\mu^-)$（ITI 2306.03341）；RepE 对比向量（Zou 2310.01405）。
 - **红线级警示**（Braun 2505.22637）：强度↑连贯性/忠实性↓、属性一致幻觉、小模型更敏感 → **α 有界（残差模长 ±0.1 级）、仅触发时、单方向**，"steering 后人效不降"纳入退出标准（对齐 M5 Δ+0.0001）。
 
+### 5.1 双刃剑门控（2026-07-27 文献确认 + 本项目实证）
+**核心澄清（诚实）**：ITI 方向 steer 是双刃剑——同一方向既能把"模型不知道的内容"steer 成"看似知道"（造假，坏），也能把"不确定"推向正确（好）。**正确用法是门控**：检测到 L1 空白 → 不 steer 成 know，而是触发诚实降级；ITI 应用于 L3 冲突沿参数知识方向 或 L2 高唤醒增强显著性。
+- **非识别性**（2602.06801《On the Non-Identifiability of Steering Vectors》）：许多几何不同向量行为等价；logit-Jacobian 大空间使任意正交扰动可不改输出 → **双刃剑有理论依据**（存在可滥用/逆用通路）。
+- **门控形式有文献支持**（2602.01654 Steering Vector Fields / 2502.02716 Unified Steering）：二值阈值/sigmoid 软门/置信度乘子 α 缩放/**条件触发**（冲突检测/激活幅度/外部校验）——非全程常开。
+- **校准副作用**（SteerConf 2503.02863 ECE 17.3→11.7%；CORAL 2602.06022；OPIUM 2607.19806 steering externalities）：steering 可破坏校准/降拒答模板/升 jailbreak 成功率 → α 有界 + 仅触发 + ECE/Brier/拒答率/ASR 监测。
+- **拒答方向**（2406.11717《Refusal is Mediated by a Single Direction》）：单一方向介导拒答，添加/消减可强改拒答行为 → **反向 steer 增强 abstention 可行**（与诚实降级闭环互补）。
+- **本项目实证（0.1B）**：kal_l1 真值方向 cos know=0.988/blank=−0.989；fake P(空白) 在 α≈0.2×残差 norm 翻转（blank→know）——**有效但双刃**，实证门控必要性。
+- **落地（model/iti_head.py）**：ITIHead（方向=kal_l1 diff-in-means，非可学习防错位）+ **ITIGate 条件触发门**——L1 空白→abstain（绝不 steer 成 know）/ L3 冲突或 L2 高唤醒→steer_toward_truth / 低信号→noop；优先级 空白>冲突>唤醒；fail-closed（None 信号→noop）。监测/执行分置：sense 读 GDN 层、ITI 写 CSA 残差前层。
+
 ## 6. 神经科学承重（功能性类比）
 - 监测/控制分离（Morales/Lau/Fleming 2018；Nelson&Narens 1990）→ **sense/inject 分置红线直接依据**。
 - rlPFC 损元认知不损一阶（Fleming 2014）→ L1 头与主干可分离。
