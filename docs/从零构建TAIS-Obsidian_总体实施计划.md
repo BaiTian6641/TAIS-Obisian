@@ -487,7 +487,24 @@ llama.cpp 已有 `GGML_OP_GATED_DELTA_NET` 算子与 Qwen3-Next converter；保�
 
 **当前最新 git**：main 已推远端（见仓库 log），168 项 pytest 全绿。
 
-**下一步（按优先级）**：① PM-stream 下端到端（正式读点，多流模型——KAL 在 PM 架构的正式形态）；② GDN-2 全层消融（独立主线，T1/T2）；③ D-2 0.5B 对拍 + Muon 切换（设计 v2.5 纪律）；④ 内词典 T_E/T_U 精修（§28.4 第 1 级，针对 0.1B hidden 未对齐负面发现）；⑤ EXP-PERSONA 细稿（§8A）。
+---
+
+### 12.6 GDN-2 全量切换（2026-07-27，backbone 升级，**当前最新状态**）
+
+> **决策**：用户指示"直接切换到 GDN-2"（NVIDIA arXiv:2605.22791 已实证优于 GDN-1，RULER 检索大幅领先，tied 退化=GDN-1 严格一般化）。GDN-MemBlock 主干由 GDN-1 升级为 **GDN-2（erase/write 解耦）**，177 项 pytest 全绿。
+
+**GDN-2 落地三件套**：
+1. **chunked 训练核**（`chunked_gated_delta_rule_2`，子代理实现 + 主代理验收）——WY 表示，**erase gate 折入 key tile**（`k_beta=(b⊙k)`，GDN-2 唯一结构改变）+ **write gate 折入 value tile**（`u=(w⊙v)`），A_strict 三角求解。**对拍 CPU/CUDA 无/带初态 <1e-6、tied 退化=GDN-1 chunked 0.00e0**（严格一般化，子代理抓对了 `k_beta=k*beta`↔`k_beta=k*b` 的对称性）。
+2. **GDN2Block**（继承 GDNBlock）：`b_proj→key_dim`（erase key 侧）+ `w_proj→value_dim`（write value 侧），sigmoid [0,1]，GVA 时 b 随 q/k 重复；参数 +876K/层（channel-wise 门）。
+3. **集成切换**：`layer_type="G2"`→GDN2Block；config `block_pattern` 默认 `G2G2G2A`（0.1B **115.99M** 在 90-130M 区间）；`kernel_sense_index`+use_kernel sense 覆盖 G2（GDN 系读点）；config.layer_types 接受 G2。测试适配（capture/blockpath GDN 系 G/G2）。
+
+**实证基础**（前序，§12.6 前已验）：① **记忆保护语义对拍**——key2 干扰 key1 后查询，GDN-1 标量 β 无差别擦除读出 −4.804（旧关联覆盖/符号翻转），GDN-2 erase gate 保护重叠坐标读出 2.741（接近真值 5.0）——直接验证论文核心 claim"erase gate 贡献最大"，正对 §25.2 GDN 固定状态检索短板；② 论文 matched 1.3B/100B FineWeb-Edu 超 Mamba-2/GDN/KDA/Mamba-3、RULER 大幅领先（S-NIAH-3@2K 63.2→89.8）。
+
+**注意**：旧 GDN-1 checkpoint 的 G 层权重（标量 b_proj）与 G2（channel-wise b/w_proj）形状不兼容——旧 checkpoint（pilot_0p1b_*）需 `from_pretrained(skip_keys)` 兼容或重训。新增 4 项 chunked 对拍测试（naive/tied/训练-生成路径一致）。
+
+**当前最新 git**：main 已推远端（见仓库 log），177 项 pytest 全绿。
+
+**下一步（按优先级）**：① GDN-2 检索任务训练消融（GDN-1 vs GDN-2 全层 RULER/合成检索对比，验证全层训练收益）；② PM-stream 下端到端（正式读点，多流模型）；③ D-2 0.5B 对拍 + Muon 切换（设计 v2.5 纪律）；④ 内词典 T_E/T_U 精修（§28.4 第 1 级）；⑤ EXP-PERSONA 细稿（§8A）。
 
 ---
 
