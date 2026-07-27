@@ -84,8 +84,87 @@ class ITIHead:
         return self.steer(hidden, alpha_frac, reverse=False)
 
 
+# ---------------------------------------------------------------------------
+# ITI 条件触发门（双刃剑门控，2026-07-27 文献修正：2602.01654/2502.02716/2406.11717）
+# ---------------------------------------------------------------------------
+
+# 触发决策（门控输出）
+ITI_ABSTAIN = "abstain"        # 拒答/诚实降级（L1 空白——不 steer 成 know）
+ITI_STEER_TRUTH = "steer_truth"  # 沿真值方向 steer（L3 冲突/高唤醒——方向正确场景）
+ITI_NOOP = "noop"              # 不干预（默认/低信号）
+
+
+class ITIGate:
+    """ITI 条件触发门（双刃剑门控）：决定何时 steer、何时拒答、何时不动。
+
+    设计（tavily 文献修正 2026-07-27）：
+    - **条件触发非全程常开**（2602.01654 Steering Vector Fields / 2502.02716 Unified）：
+      用 probe-score 作触发，高信号（冲突/高唤醒）才 α=α_max，低信号 α=0 或拒答。
+    - **空白 → 拒答非 steer**（诚实降级红线 + 2406.11717 拒答方向）：L1 空白时**绝不**
+      steer_toward_truth（造假），返回 abstain 由编排层触发诚实降级；可选 reverse steer
+      增强拒答（拒答方向，与诚实降级互补）。
+    - **校准防御**（SteerConf 2503.02863 / OPIUM 2607.19806 externalities）：α 有界 +
+      仅触发 + steer 后监测 ECE/人效/拒答率。
+
+    门控规则（按序，前者优先）：
+    1. L1 空白（is_blank）→ abstain（诚实降级，**绝不 steer 成 know**）；
+    2. L3 冲突（conflict 超阈）或 L2 高唤醒（arousal 超阈）→ steer_toward_truth（方向正确）；
+    3. 否则 → noop（不干预，人效零开销）。
+    """
+
+    def __init__(
+        self,
+        iti: ITIHead,
+        conflict_thresh: float = 0.0,
+        arousal_thresh: float = 0.5,
+        truth_alpha_frac: float = 0.1,
+    ):
+        self.iti = iti
+        self.conflict_thresh = conflict_thresh
+        self.arousal_thresh = arousal_thresh
+        self.truth_alpha_frac = truth_alpha_frac
+
+    def decide(
+        self,
+        is_blank: bool,
+        conflict_score: float | None = None,
+        arousal: float | None = None,
+    ) -> str:
+        """门控判定（纯函数，fail-closed 倾向 noop/abstain——不确定时不盲目 steer）。"""
+        if is_blank:
+            return ITI_ABSTAIN  # 空白 → 诚实降级（绝不 steer 成 know）
+        if conflict_score is not None and conflict_score > self.conflict_thresh:
+            return ITI_STEER_TRUTH  # L3 冲突 → 沿真值/参数知识方向 steer
+        if arousal is not None and arousal > self.arousal_thresh:
+            return ITI_STEER_TRUTH  # L2 高唤醒 → 增强（高显著场景）
+        return ITI_NOOP
+
+    def apply(
+        self,
+        hidden: torch.Tensor,
+        is_blank: bool,
+        conflict_score: float | None = None,
+        arousal: float | None = None,
+    ) -> tuple[torch.Tensor, str]:
+        """门控 + 应用：返回 (steer 后 hidden, 决策)。
+
+        abstain/noop 不改 hidden（abstain 由编排层触发诚实降级，noop 零开销）；
+        steer_truth 沿真值方向有界 steer。
+        """
+        action = self.decide(is_blank, conflict_score, arousal)
+        if action == ITI_STEER_TRUTH:
+            return self.iti.steer_toward_truth(hidden, self.truth_alpha_frac), action
+        # abstain 与 noop 都不改 hidden（abstain 的拒答由编排层闭环处理，非 steer）
+        return hidden, action
+
+
 def make_iti_from_kernel(kernel, max_alpha_frac: float = 0.2) -> ITIHead:
     """从内核 KAL L1 头派生 ITI 干预头（执行通道）。"""
     if kernel is None or not hasattr(kernel, "kal_l1"):
         raise RuntimeError("内核无 kal_l1 头（fail-closed，无法派生 ITI 方向）")
     return ITIHead.from_kal_l1(kernel.kal_l1, max_alpha_frac=max_alpha_frac)
+
+
+def make_iti_gate(kernel, max_alpha_frac: float = 0.2, **gate_kw) -> ITIGate:
+    """从内核派生 ITI 干预头 + 条件触发门（执行通道 + 双刃剑门控）。"""
+    return ITIGate(make_iti_from_kernel(kernel, max_alpha_frac=max_alpha_frac), **gate_kw)
