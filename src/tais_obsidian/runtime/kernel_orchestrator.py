@@ -71,6 +71,7 @@ class KernelOrchestrator:
         calibrator=None,
         gate=None,
         blank_message: str = "该部分记忆暂不可用（KAL 检测到知识空白，诚实降级）",
+        dynamic_vocab=None,
     ):
         self.kernel = kernel
         self.bus = bus
@@ -78,6 +79,9 @@ class KernelOrchestrator:
         self.calibrator = calibrator
         self.gate = gate
         self.blank_message = blank_message
+        # 动态词表（M7）：KAL 词表摩擦感知 → concept_slot 注册（KAL 动态感知已学内容）。
+        # dynamic_vocab = dyn_vocab.DynamicVocab（extract_fn 须已注入 Kaplan 提取回调）。
+        self.dynamic_vocab = dynamic_vocab
 
     # ------------------------------------------------------------------
     def sense_gate(self, pm_out: torch.Tensor) -> RecallDecision:
@@ -110,6 +114,34 @@ class KernelOrchestrator:
             should_recall=is_blank,
             message=self.blank_message if is_blank else "",
         )
+
+    # ------------------------------------------------------------------
+    def assess_vocab_friction(
+        self,
+        text: str,
+        p_ik: float,
+        next_token_entropy: float,
+        repeat_cooccur: float,
+    ) -> bool:
+        """KAL 词表摩擦感知（动态 tokenizer 集成，KAL 动态感知已学内容）。
+
+        当某概念/专名反复出现（高 repeat_cooccur）、模型对它 P(IK) 低（不熟）、
+        next-token 熵高（碎片化难预测）→ 词表摩擦高 → 值得升格为 concept_slot
+        （把多 token 碎片压缩成单槽"已学概念"，后续输入侧一次前向理解）。
+
+        超阈且挂 dynamic_vocab 时，经 DynamicVocab 提取+注册 concept_slot 到页表
+        （页表=动态词表 codebook）。返回是否触发注册。
+        fail-closed：未挂 dynamic_vocab / 提取失败 → 返回 False（不静默）。
+        """
+        if self.dynamic_vocab is None:
+            return False
+        if not self.dynamic_vocab.detect(next_token_entropy, p_ik, repeat_cooccur):
+            return False
+        try:
+            self.dynamic_vocab.promote(text)  # extract(Kaplan) → register(concept_slot)
+            return True
+        except (RuntimeError, ValueError):
+            return False  # 提取/注册失败 fail-closed（extract_fn 未注入等）
 
     # ------------------------------------------------------------------
     def route_blocks(
