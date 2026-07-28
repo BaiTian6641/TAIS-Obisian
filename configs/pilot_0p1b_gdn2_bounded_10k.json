@@ -1,0 +1,21 @@
+{
+  "run_name": "pilot_0p1b_gdn2_bounded_10k",
+  "seed": 42,
+  "out_dir": "checkpoints/pilot_0p1b_gdn2_bounded_10k",
+  "data_dir": "data/shards",
+  "seq_len": 1024,
+  "max_steps": 10000,
+  "micro_batch": 16,
+  "grad_accum": 4,
+  "lr": 0.001,
+  "warmup": 500,
+  "decay_frac": 0.2,
+  "weight_decay": 0.1,
+  "grad_clip": 1.0,
+  "val_every": 500,
+  "val_batches": 20,
+  "log_every": 50,
+  "ckpt_every": 1000,
+  "gdn_decay_g_min": -5.0,
+  "_comment": "GDN-2 10k 步【有界 decay 变体】——K3 式有界 sigmoid decay（g_min=-5，g=g_min*sigmoid(exp(A_log)*(a+dt_bias))），与无界基线 pilot_0p1b_gdn2_10k 对比，验证 decay 有界化是否助门收敛+检索（K3 借鉴核心动机：有界 sigmoid 衰减可能更易学，对 GDN-2 门欠收敛是潜在贡献因子；且保 1M 数值范围）。与基线唯一差异 = gdn_decay_g_min（基线 null=无界）。同 seed/超参/数据保证公平对比。验证判据：门分化度（b/w 坐标 std，真实数据分布测）+ NIAH 检索准确率，与基线 8k/10k 中期/最终结果对比。"
+}

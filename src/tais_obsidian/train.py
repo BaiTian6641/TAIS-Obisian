@@ -214,6 +214,10 @@ def main() -> None:
         tri_use_indexer=cfg.get("tri_use_indexer", True),
         tri_index_heads=cfg.get("tri_index_heads", 4),
         tri_index_dim=cfg.get("tri_index_dim", 32),
+        # GDN decay 参数化（2026-07-27 有界化）：config JSON 显式 "gdn_decay_g_min" 控制——
+        # -5.0=K3 式有界 sigmoid（新训练默认）；null=旧式无界（复现旧 checkpoint 语义）。
+        # 缺省用 ModelConfig 默认（-5.0 有界）；无界对照 run 须显式 "gdn_decay_g_min": null。
+        gdn_decay_g_min=cfg.get("gdn_decay_g_min", -5.0),
         kernel_enabled=cfg.get("kal_aux_weight", 0.0) > 0.0,
         kernel_sense_layers=cfg.get("kal_sense_layers") or [],
     )
