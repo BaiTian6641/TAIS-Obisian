@@ -34,6 +34,12 @@ from .reasoning_loop import (
     trajectory_to_recall_tokens,
 )
 from .thought_core import ChannelGroupHistory, ThoughtCore, ThoughtTimeRotary
+from .thought_visualizer import (
+    ThoughtTrajectory,
+    ThoughtTrajectoryPoint,
+    ThoughtVisualizer,
+    render_ascii,
+)
 
 __all__ = [
     "ChannelGroupHistory",
@@ -58,6 +64,9 @@ __all__ = [
     "ThoughtSegmentDecoder",
     "ThoughtSegmentExtractor",
     "ThoughtTimeRotary",
+    "ThoughtTrajectory",
+    "ThoughtTrajectoryPoint",
+    "ThoughtVisualizer",
     "chunked_gated_delta_rule",
     "conformal_isometry_loss",
     "decorrelation_loss",
@@ -65,5 +74,6 @@ __all__ = [
     "make_path_integration_task",
     "naive_recurrent_gated_delta_rule",
     "path_integration_loss",
+    "render_ascii",
     "trajectory_to_recall_tokens",
 ]
