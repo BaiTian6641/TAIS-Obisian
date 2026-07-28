@@ -75,6 +75,10 @@ class ModelConfig:
     kernel_dg_dim: int = 256   # DG 投影维度
     kernel_dg_topk: int = 32   # DG 稀疏 key top-k
     kernel_sense_layers: list[int] = field(default_factory=list)  # sense 读点层（空=全部 GDN 层）
+    # 思考流形层（第二阶段迭代① pilot，独立模块）：manifold_dim = 共享坐标空间维度。
+    # 默认 64（几十到一百多维有效维，避免信息瓶颈；**不是** 3 维——维度修正见
+    # 思维能力强化设计文档 §1.1；3D 仅作人类可解释性视图，实现见 model/manifold.py）。
+    manifold_dim: int = 64
 
     @property
     def layer_types(self) -> list[str]:
