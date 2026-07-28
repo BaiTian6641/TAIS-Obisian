@@ -12,16 +12,20 @@ from .manifold_bridge import (
     ThoughtSegmentExtractor,
 )
 from .model import TaisObsidianForCausalLM
+from .thought_core import ChannelGroupHistory, ThoughtCore, ThoughtTimeRotary
 
 __all__ = [
+    "ChannelGroupHistory",
     "GDNBlock",
     "ManifoldToHidden",
     "TaisObsidianForCausalLM",
+    "ThoughtCore",
     "ThoughtDisplacementWriter",
     "ThoughtManifold",
     "ThoughtManifoldBridge",
     "ThoughtManifoldProjector",
     "ThoughtSegmentExtractor",
+    "ThoughtTimeRotary",
     "chunked_gated_delta_rule",
     "conformal_isometry_loss",
     "decorrelation_loss",
