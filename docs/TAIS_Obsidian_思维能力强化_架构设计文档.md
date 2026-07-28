@@ -140,7 +140,7 @@
 
 1. **GDN-2 门收敛验证**（当前 10k 步训练中）：让 channel-wise erase/write 门学会选择性（2000 步门 b/w≈0.5 欠收敛，检索劣势是欠训练非架构缺陷），复测 NIAH 检索应反超 GDN-1。**GDN-2 是思考核的持续状态载体，其门收敛是第二阶段的地基**。
 2. **GDN decay 有界化**（K3 借鉴，§5.1）✅ **已落地（2026-07-27）**：无界 negative-softplus → K3 式有界 sigmoid `g=g_min·sigmoid(exp(A_log)·(a+dt_bias))`（g_min=−5），保 1M 数值范围 + 助门收敛。实现：`config.gdn_decay_g_min`（默认 −5 有界；`None`=旧式无界仅复现旧 checkpoint）+ `gdn.py._log_decay`（GDN2Block 继承自动生效）+ fp32 饱和 clamp 保严格开区间。**断点兼容**：旧 checkpoint config.json 无该字段，`from_json` 回填 None 复现无界语义；新训练须显式写 −5。177 项 pytest 全绿；**效果待验证**——后续开有界 run 对比 10k 无界基线的门分化度+NIAH。
-3. **PM-stream 端到端**（正式读点，多流模型）——思考核的 PM-stream 写入需多流正式形态。
+3. **PM-stream 端到端**（正式读点，多流模型）✅ **已贯通（2026-07-27）**：mHC 多流残差（model.py `_forward_pm`）+ sense 读 GDN PM 流 + inject 写 CSA PM 流 + capture `{"content","pm"}` + 增量 cache（流为逐 token 激活不入 cache，test_e <1e-4）+ 训练读 config（`pm_stream`）。**新增思考流形↔PM-stream 桥接**（`model/manifold_bridge.py`，迭代①×③交汇）：`ThoughtSegmentExtractor`（PM 末位流→共享 projector→流形坐标，支持思考段边界均值池化）+ `ThoughtDisplacementWriter`（流形位移经 `ManifoldToHidden` 反投影回 d_model，steering 式有界加法写回 PM-stream，α≤0.2×norm 对齐 ITI 写纪律 + detach 梯度边界）+ `ThoughtManifoldBridge.tick`（单 tick 闭环：读坐标→算位移→反投影→有界写回）。**写纪律红线**：运行时写 PM-stream 是 W1–W2 零梯度 steering 快写，绝不触碰权重；`to_hidden` 唯一可训练参数走离线显式目标。6 项测试全绿，全量 189 绿。**待接**：思考核（迭代③）用 tick 驱动多步导航 + `to_hidden` 离线训练目标（重建/对比）。
 
 ---
 
