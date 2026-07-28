@@ -1,3 +1,9 @@
+from .cot_projection import (
+    CotFaithfulnessAudit,
+    CotProjectionLayer,
+    ThoughtSegmentDecoder,
+    grounded_supervision_loss,
+)
 from .gdn import GDNBlock, chunked_gated_delta_rule, naive_recurrent_gated_delta_rule
 from .manifold import (
     ThoughtManifold,
@@ -31,6 +37,8 @@ from .thought_core import ChannelGroupHistory, ThoughtCore, ThoughtTimeRotary
 
 __all__ = [
     "ChannelGroupHistory",
+    "CotFaithfulnessAudit",
+    "CotProjectionLayer",
     "GDNBlock",
     "GridCodeProbe",
     "ManifoldToHidden",
@@ -47,11 +55,13 @@ __all__ = [
     "ThoughtManifold",
     "ThoughtManifoldBridge",
     "ThoughtManifoldProjector",
+    "ThoughtSegmentDecoder",
     "ThoughtSegmentExtractor",
     "ThoughtTimeRotary",
     "chunked_gated_delta_rule",
     "conformal_isometry_loss",
     "decorrelation_loss",
+    "grounded_supervision_loss",
     "make_path_integration_task",
     "naive_recurrent_gated_delta_rule",
     "path_integration_loss",
