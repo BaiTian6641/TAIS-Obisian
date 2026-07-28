@@ -3,7 +3,13 @@
 参照 fla 库参考实现：
 - fla/ops/gated_delta_rule/naive.py 的 naive_recurrent / naive_chunk（WY 表示法分块）
 - fla/layers/gated_deltanet.py 的层封装（投影 → 短因果 Conv1d+SiLU → L2 norm →
-  beta=sigmoid 写入强度 → decay g = -exp(A_log)*softplus(a+dt_bias) → 输出 sigmoid 门控 RMSNorm）
+  beta=sigmoid 写入强度 → decay 对数衰减 → 输出 sigmoid 门控 RMSNorm）
+
+**decay 参数化（2026-07-27 起默认 K3 式有界，config `gdn_decay_g_min`）**：
+- `g_min=None`：旧式无界 negative-softplus `g = −exp(A_log)·softplus(a+dt_bias)`（仅复现旧 checkpoint）；
+- `g_min` 数值（默认 −5）：K3 式有界 `g = g_min·sigmoid(exp(A_log)·(a+dt_bias))` ∈ (g_min, 0)，
+  保 1M 长上下文数值范围（倒数 rescale < e^80 不溢出 BF16）+ 助门收敛（arXiv:2510.26692 谱系）。
+  **断点不兼容**：两式非线性不可逆，旧 checkpoint 需 config 设 `gdn_decay_g_min=null` 加载。
 
 两条核心路径：
 - naive_recurrent：逐步循环，参考实现；
@@ -167,14 +173,20 @@ class GDNBlock(nn.Module):
         self.v_proj = nn.Linear(d, self.value_dim, bias=False)
         self.a_proj = nn.Linear(d, self.n_v_heads, bias=False)
         self.b_proj = nn.Linear(d, self.n_v_heads, bias=False)
-        # decay 参数化（对齐 fla / Qwen3-Next 初始化）
+        # decay 参数化（K3 式有界 sigmoid，config `gdn_decay_g_min`；初始化对齐 fla/Qwen3-Next）
+        self.g_min: float | None = cfg.gdn_decay_g_min
         A = torch.empty(self.n_v_heads, dtype=torch.float32).uniform_(0, 16)
         self.A_log = nn.Parameter(torch.log(A))
         dt = torch.exp(
             torch.rand(self.n_v_heads) * (math.log(0.1) - math.log(0.001)) + math.log(0.001)
         )
         dt = torch.clamp(dt, min=1e-4)
-        self.dt_bias = nn.Parameter(dt + torch.log(-torch.expm1(-dt)))  # softplus 逆
+        if self.g_min is None:
+            # 旧式无界 negative-softplus：dt_bias = softplus 逆（复现旧 checkpoint）
+            self.dt_bias = nn.Parameter(dt + torch.log(-torch.expm1(-dt)))
+        else:
+            # K3 式有界 sigmoid：z=a+dt_bias 初始小正值（→sigmoid 小→g 近 0=慢衰减起步，对齐旧式量级）
+            self.dt_bias = nn.Parameter(dt.clone())
         # 短因果 depthwise Conv1d（kernel=4，无 bias，SiLU）
         self.q_conv = nn.Conv1d(self.key_dim, self.key_dim, self.conv_kernel, groups=self.key_dim, bias=False)
         self.k_conv = nn.Conv1d(self.key_dim, self.key_dim, self.conv_kernel, groups=self.key_dim, bias=False)
@@ -182,6 +194,17 @@ class GDNBlock(nn.Module):
         self.g_proj = nn.Linear(d, self.value_dim, bias=False)
         self.o_norm = RMSNormGated(self.head_dim, eps=cfg.rms_eps)
         self.o_proj = nn.Linear(self.value_dim, d, bias=False)
+
+    def _log_decay(self, x: torch.Tensor) -> torch.Tensor:
+        """对数衰减 g ∈ (g_min, 0)（有界 K3 式）或 (−∞, 0)（旧式无界）。返回 [B,T,Hv] fp32。"""
+        z = self.a_proj(x).float() + self.dt_bias  # decay logit
+        if self.g_min is None:
+            return -self.A_log.exp() * F.softplus(z)
+        # K3 式有界：clamp 保严格开区间（fp32 sigmoid 极值会饱和到恰好 0/1→g=0 或 g_min，失去
+        # 严格 α>e^{g_min}；eps 内缩保数学开区间，对齐 K3"every retention factor α > e^{g_min}"）。
+        g = float(self.g_min) * torch.sigmoid(self.A_log.exp() * z)
+        eps = abs(float(self.g_min)) * 1e-6
+        return g.clamp(min=float(self.g_min) + eps, max=-eps)
 
     def _causal_conv(
         self, conv: nn.Conv1d, x: torch.Tensor, cache: torch.Tensor | None
@@ -215,8 +238,7 @@ class GDNBlock(nn.Module):
             k = k.repeat_interleave(rep, dim=2)
 
         beta = self.b_proj(x).sigmoid()  # 写入强度 [B,T,Hv]
-        a = self.a_proj(x)
-        g = -self.A_log.exp() * F.softplus(a.float() + self.dt_bias)  # 对数衰减 [B,T,Hv]
+        g = self._log_decay(x)  # 对数衰减 [B,T,Hv]（K3 式有界 / 旧式无界，见 _log_decay）
 
         rec = state["recurrent"] if state else None
         if T == 1 and not self.training:

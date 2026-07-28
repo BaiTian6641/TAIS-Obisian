@@ -16,5 +16,5 @@
   "val_batches": 20,
   "log_every": 50,
   "ckpt_every": 1000,
-  "_comment": "GDN-2 10k 步训练（~0.65B tokens，~6:1 tokens:param）——让 channel-wise erase/write 门充分收敛（2000 步门未分化 b/w≈0.5，检索劣势是欠训练非架构缺陷；NVIDIA 用 100B tokens 门收敛，我们加长到 10k 步验证门收敛→NIAH 检索反超）。warmup 500/decay_frac 0.2 适配长程 schedule。GDN-2 默认 G2G2G2A + tri_use_indexer True。"
+  "_comment": "GDN-2 10k 步训练（~0.65B tokens，~6:1 tokens:param）——让 channel-wise erase/write 门充分收敛（2000 步门未分化 b/w≈0.5，检索劣势是欠训练非架构缺陷；NVIDIA 用 100B tokens 门收敛，我们加长到 10k 步验证门收敛→NIAH 检索反超）。warmup 500/decay_frac 0.2 适配长程 schedule。GDN-2 默认 G2G2G2A + tri_use_indexer True。【decay 说明】本 run 于 2026-07-27 decay 有界化改动前启动（旧代码，无界 negative-softplus decay），语义自洽——作为有界化改动的对照基线；config.json 未显式写 gdn_decay_g_min，from_json 会回填 None 复现旧式无界。后续验证有界化效果须另开 run（显式 \"gdn_decay_g_min\": -5.0）对比门分化度+NIAH。"
 }

@@ -30,6 +30,14 @@ class ModelConfig:
     n_v_heads: int = 12
     n_qk_heads: int = 6
     conv_kernel: int = 4
+    # GDN decay 参数化（K3 借鉴，arXiv:2510.26692 §2.1.1 谱系；2026-07-27 起默认有界）：
+    # None = 旧式无界 negative-softplus  g = −exp(A_log)·softplus(a+dt_bias) ∈ (−∞, 0)
+    #        （仅用于加载旧 checkpoint 复现；1M 长上下文 1/cumulative-decay 会溢出 BF16）
+    # 数值（如 −5）= K3 式有界 scaled-sigmoid  g = g_min·sigmoid(exp(A_log)·(a+dt_bias)) ∈ (g_min, 0)
+    #        → 每步保持因子 α > e^{g_min} ≈ 6.7e-3，16-token tile 累积 log-decay ∈ (−80, 0)，
+    #        倒数 rescale < e^80 留在 BF16 动态范围内（1M 必需）；有界 sigmoid 亦可能助门收敛
+    #        （GDN-2 b/w≈0.5 欠收敛的潜在贡献因子）。
+    gdn_decay_g_min: float | None = -5.0
     # MLP（SwiGLU）
     mlp_hidden: int = 2048
     rms_eps: float = 1e-6
@@ -92,4 +100,12 @@ class ModelConfig:
         dropped = sorted(set(data) - valid)
         if dropped:
             print(f"[config] 忽略未知字段（向后兼容）: {dropped}")
+        # 断点兼容（decay 语义）：2026-07-27 前训练的 checkpoint config.json 无
+        # `gdn_decay_g_min` 字段，其权重是**无界 negative-softplus decay** 训出的。
+        # 若按新默认（有界 −5）加载则 decay 语义错位（b/w 门与衰减失配）。
+        # 故字段缺席时回填 None = 旧式无界，保证旧 checkpoint 复现语义一致；
+        # 新训练 config 须显式写 "gdn_decay_g_min": -5.0 走 K3 式有界。
+        if "gdn_decay_g_min" not in data:
+            data["gdn_decay_g_min"] = None
+            print("[config] 旧 checkpoint 无 gdn_decay_g_min 字段 → 回填 None（旧式无界 decay 复现）")
         return cls(**{k: v for k, v in data.items() if k in valid})

@@ -139,7 +139,7 @@
 **第二阶段构建在第一阶段之上**（KAL/HRL/PM-stream/知识块/GDN-2 全部复用），新增的仅是思考流形、思考核、推理循环、导航课程四个概念。**前置工程**（第二阶段动工前须完成）：
 
 1. **GDN-2 门收敛验证**（当前 10k 步训练中）：让 channel-wise erase/write 门学会选择性（2000 步门 b/w≈0.5 欠收敛，检索劣势是欠训练非架构缺陷），复测 NIAH 检索应反超 GDN-1。**GDN-2 是思考核的持续状态载体，其门收敛是第二阶段的地基**。
-2. **GDN decay 有界化**（K3 借鉴，§5.1）：无界 negative-softplus → K3 式有界 sigmoid（g_min=−5），保 1M 数值范围 + 助门收敛。
+2. **GDN decay 有界化**（K3 借鉴，§5.1）✅ **已落地（2026-07-27）**：无界 negative-softplus → K3 式有界 sigmoid `g=g_min·sigmoid(exp(A_log)·(a+dt_bias))`（g_min=−5），保 1M 数值范围 + 助门收敛。实现：`config.gdn_decay_g_min`（默认 −5 有界；`None`=旧式无界仅复现旧 checkpoint）+ `gdn.py._log_decay`（GDN2Block 继承自动生效）+ fp32 饱和 clamp 保严格开区间。**断点兼容**：旧 checkpoint config.json 无该字段，`from_json` 回填 None 复现无界语义；新训练须显式写 −5。177 项 pytest 全绿；**效果待验证**——后续开有界 run 对比 10k 无界基线的门分化度+NIAH。
 3. **PM-stream 端到端**（正式读点，多流模型）——思考核的 PM-stream 写入需多流正式形态。
 
 ---

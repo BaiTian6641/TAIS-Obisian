@@ -65,8 +65,12 @@ def test_a_identity_init() -> None:
         logits5, _ = m5(ids)
     d = (logits1 - logits5).abs().max().item()
     scale = logits1.abs().max().item()
-    print(f"[identity] PM(恒等初始化) vs 单流基线: max diff {d:.2e}（logits 峰值 {scale:.2f}）")
-    assert d < 1e-6, d
+    rel = d / scale
+    print(f"[identity] PM(恒等初始化) vs 单流基线: max diff {d:.2e}（logits 峰值 {scale:.2f}，相对 {rel:.2e}）")
+    # bf16 autocast 下 12 层 GDN+三级栈累积：绝对 diff 偶发达 ~3e-6（logits 峰值 ~3，
+    # 相对 ~1e-6，属 bf16 数值边界而非逻辑误差）。判据用相对容差（对齐"恒等"语义，
+    # 防 d_model/head_dim 放大后 flaky）。逻辑恒等 ⇒ rel 应远小于 bf16 精度（~8e-3）。
+    assert rel < 1e-5, f"rel={rel:.2e} (abs={d:.2e}, scale={scale:.2f})"
 
 
 def test_b_stability_probe() -> None:

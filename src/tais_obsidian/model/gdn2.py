@@ -242,8 +242,7 @@ class GDN2Block(GDNBlock):
             k = k.repeat_interleave(rep, dim=2)
             b = b.repeat_interleave(rep, dim=2)
 
-        a = self.a_proj(x)
-        g = -self.A_log.exp() * F.softplus(a.float() + self.dt_bias)  # 对数衰减 [B,T,Hv]
+        g = self._log_decay(x)  # 对数衰减 [B,T,Hv]（继承 GDNBlock：K3 式有界 / 旧式无界）
 
         rec = state["recurrent"] if state else None
         if T == 1 and not self.training:
