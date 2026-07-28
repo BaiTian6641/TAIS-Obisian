@@ -12,12 +12,21 @@ from .manifold_bridge import (
     ThoughtSegmentExtractor,
 )
 from .model import TaisObsidianForCausalLM
+from .reasoning_loop import (
+    RECALL_TOKEN,
+    ReasoningLoop,
+    ReasoningTickState,
+    trajectory_to_recall_tokens,
+)
 from .thought_core import ChannelGroupHistory, ThoughtCore, ThoughtTimeRotary
 
 __all__ = [
     "ChannelGroupHistory",
     "GDNBlock",
     "ManifoldToHidden",
+    "RECALL_TOKEN",
+    "ReasoningLoop",
+    "ReasoningTickState",
     "TaisObsidianForCausalLM",
     "ThoughtCore",
     "ThoughtDisplacementWriter",
@@ -30,4 +39,5 @@ __all__ = [
     "conformal_isometry_loss",
     "decorrelation_loss",
     "naive_recurrent_gated_delta_rule",
+    "trajectory_to_recall_tokens",
 ]
