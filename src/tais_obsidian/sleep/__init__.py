@@ -12,6 +12,13 @@ from .consolidator import (
     retrieval_practice,
     shy_normalize,
 )
+from .inquiry_consolidation import (
+    InquirySleepConsolidation,
+    InquiryW0Adapter,
+    PriorConsistencyGate,
+    TriRewardRL,
+    make_inquiry_sleep_consolidation,
+)
 
 __all__ = [
     "W0Item",
@@ -22,4 +29,9 @@ __all__ = [
     "retrieval_practice",
     "shy_normalize",
     "make_consolidator",
+    "InquirySleepConsolidation",
+    "InquiryW0Adapter",
+    "PriorConsistencyGate",
+    "TriRewardRL",
+    "make_inquiry_sleep_consolidation",
 ]
