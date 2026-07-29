@@ -5,6 +5,14 @@ from .cot_projection import (
     grounded_supervision_loss,
 )
 from .gdn import GDNBlock, chunked_gated_delta_rule, naive_recurrent_gated_delta_rule
+from .inquiry_branch import (
+    ASK_TOKEN,
+    ActiveInquiryLoop,
+    InquiryAction,
+    InquiryBranch,
+    InquiryDecision,
+    InquiryRouter,
+)
 from .manifold import (
     ThoughtManifold,
     ThoughtManifoldProjector,
@@ -42,11 +50,17 @@ from .thought_visualizer import (
 )
 
 __all__ = [
+    "ASK_TOKEN",
+    "ActiveInquiryLoop",
     "ChannelGroupHistory",
     "CotFaithfulnessAudit",
     "CotProjectionLayer",
     "GDNBlock",
     "GridCodeProbe",
+    "InquiryAction",
+    "InquiryBranch",
+    "InquiryDecision",
+    "InquiryRouter",
     "ManifoldToHidden",
     "PathIntegrationData",
     "PathIntegrationEncoder",
