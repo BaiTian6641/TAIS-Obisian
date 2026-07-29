@@ -13,6 +13,14 @@ from .inquiry_branch import (
     InquiryDecision,
     InquiryRouter,
 )
+from .inquiry_executor import (
+    SOURCE_CREDIBILITY,
+    ActiveInquiryPipeline,
+    CrossVerifier,
+    Evidence,
+    InquiryExecutor,
+    KnowledgeBlockWriter,
+)
 from .manifold import (
     ThoughtManifold,
     ThoughtManifoldProjector,
@@ -51,16 +59,22 @@ from .thought_visualizer import (
 
 __all__ = [
     "ASK_TOKEN",
+    "SOURCE_CREDIBILITY",
     "ActiveInquiryLoop",
+    "ActiveInquiryPipeline",
     "ChannelGroupHistory",
     "CotFaithfulnessAudit",
     "CotProjectionLayer",
+    "CrossVerifier",
+    "Evidence",
     "GDNBlock",
     "GridCodeProbe",
     "InquiryAction",
     "InquiryBranch",
     "InquiryDecision",
+    "InquiryExecutor",
     "InquiryRouter",
+    "KnowledgeBlockWriter",
     "ManifoldToHidden",
     "PathIntegrationData",
     "PathIntegrationEncoder",
