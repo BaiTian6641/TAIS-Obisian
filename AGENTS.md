@@ -35,7 +35,7 @@
   - `generate.py`：cache 增量生成（temperature/top-k）
 - `configs/`：`pilot_0p1b.json`（hybrid 基线）、`pilot_0p1b_pm.json`（PM-stream 消融）、`pilot_0p1b_tri.json`（三级栈消融）、`pilot_0p1b_pmtri.json`（组合）；**`pilot_0p1b_attn.json`（attn_only 孪生）已于 2026-07 移除（对照组废弃）**
 - `scripts/`：`check_env.py`（环境自检）、`prepare_data.py`（FineWeb-Edu → 训 32k BPE → 120M tokens shards）、`smoke_overfit.py` / `smoke_overfit_pm.py` / `smoke_overfit_tri.py`（三变体过拟合冒烟）、`extend_tokenizer.py`（E+-2 特殊 token 扩容，幂等）、`kal_probe.py`（E+-3 KAL 探针管线，输出 `runs/kal_probe/report.json`）
-- `tests/`（**357 项 pytest 全绿**，2026-07-29）：第一阶段 M0–M8 测试（test_gdn/cache/capture/blockpath/pmstream/tri_attention/tri_indexer/kal/tokenizer_ext/tais_kernel/kernel_wiring/kernel_route_candidates/hrl/hrl_init/gdn2_indexer/runtime/injection/sleep/dyn_vocab/safety）+ 第二阶段（test_manifold/manifold_bridge/thought_core/reasoning_loop/cot_projection/thought_visualizer/path_integration/thinking_e2e/thinking_real_adapter）+ 主动求知（test_inquiry_branch/inquiry_executor/inquiry_consolidation/active_inquiry_full_chain）+ 知识内化（test_teaching_data/internalization_e2e/retrieval_recall/gated_fusion/kaplan_extract/unified_checkpoint）
+- `tests/`（**412 项 pytest 全绿**，2026-07-30）：第一阶段 M0–M8 测试（test_gdn/cache/capture/blockpath/pmstream/tri_attention/tri_indexer/kal/tokenizer_ext/tais_kernel/kernel_wiring/kernel_route_candidates/hrl/hrl_init/gdn2_indexer/runtime/injection/sleep/dyn_vocab/safety）+ 第二阶段（test_manifold/manifold_bridge/thought_core/reasoning_loop/cot_projection/thought_visualizer/path_integration/thinking_e2e/thinking_real_adapter/thought_core_integration）+ 主动求知（test_inquiry_branch/inquiry_executor/inquiry_consolidation/active_inquiry_full_chain）+ 知识内化（test_teaching_data/internalization_e2e/retrieval_recall/gated_fusion/kaplan_extract/unified_checkpoint/memlayer_internalization）+ 门控自适应（test_decoupled_gate/fully_decoupled/niah_length_scan）+ 优化（test_muon）
 - 不入库：`data/`（tokenizer + shards）、`checkpoints/`、`runs/`、`logs/`
 - **待建（对齐《接口与实现计划》§1 包结构）**：`model/` 增 `tais_kernel.py`（M1 内核骨架）、`hrl_heads.py`、`memlayer.py`、`injection.py`；新建 `runtime/`（bus/pager/pagetable/blockstore/ca3_ppr/ca1_gate/awakener/**state_ckpt**）与 `sleep/`（consolidator/distill）包。
 
@@ -97,13 +97,16 @@
   - ~~M6 睡眠固化~~ ✅（间隔提取练习+CA1门+SHY，回归通过、归一化稳定）；
   - ~~M7 动态词表~~ ✅（concept_slot+注册，输入侧提取通路）；
   - ~~M8 安全管线~~ ✅（签名+namespace+扫描器接口，投毒检出、漂移报警）。
-  - **当前进度（2026-07-29，357 项 pytest 全绿）**：M0–M8 全部落地；其后完成——
-    - **前置工程（第二阶段地基）**：① GDN-2 门收敛验证（10k 训练 NIAH 0.207 反超 GDN-1 0.177，三阶段证据链）；② GDN decay 有界化（K3 借鉴 g_min=-5 sigmoid，**4× 加速门收敛**+保 1M 数值范围，断点兼容 from_json 回填）；③ PM-stream 端到端（多流+sense/inject+桥接）。
-    - **第二阶段（思维能力强化）7 迭代 pilot 全落地**：思考流形（manifold.py，共享投影+共形等距+VICReg 去相关）→ 思考流形↔PM-stream 桥接（manifold_bridge.py）→ CTM 式思考核（thought_core.py，通道组历史+RoPE 相位化思考时间+certainty 早停）→ 推理循环（reasoning_loop.py，§1.3 五步 tick）→ CoT 投影层（cot_projection.py，投影非计算+忠实性审计）→ 路径积分辅助任务（path_integration.py，GridCodeProbe）→ 可解释性前端（thought_visualizer.py，3D 轨迹+坏路径四类检测）。端到端集成（thinking_e2e_demo）+真实部件适配（thinking_real_adapter）。
+  - **当前进度（2026-07-30，412 项 pytest 全绿）**：M0–M8 全部落地；其后完成——
+    - **前置工程（第二阶段地基）**：① GDN-2 门收敛验证（10k 训练 NIAH 0.207 反超 GDN-1 0.177，三阶段证据链）；② GDN decay 有界化（K3 借鉴 g_min=-5 sigmoid，**4× 加速门收敛**+保 1M 数值范围，断点兼容 from_json 回填）；③ PM-stream 端到端（多流+sense/inject+桥接）；④ **PM-stream 吞吐优化**（fp32 Sinkhorn+t_max 10+einsum 融合，×0.35→×0.56）；⑤ **Muon 优化器**（Newton-Schulz 正交化动量，收敛更好 6.523<AdamW 6.868，吞吐仅 4.6% 开销，对齐设计"预训练与 W4 同优化器"）。
+    - **第二阶段（思维能力强化）7 迭代 pilot 全落地**：思考流形（manifold.py，共享投影+共形等距+VICReg 去相关）→ 思考流形↔PM-stream 桥接（manifold_bridge.py）→ CTM 式思考核（thought_core.py，通道组历史+RoPE 相位化思考时间+certainty 早停）→ 推理循环（reasoning_loop.py，§1.3 五步 tick）→ CoT 投影层（cot_projection.py，投影非计算+忠实性审计）→ 路径积分辅助任务（path_integration.py，GridCodeProbe）→ 可解释性前端（thought_visualizer.py，3D 轨迹+坏路径四类检测）。端到端集成（thinking_e2e_demo）+真实部件适配（thinking_real_adapter）。**思考核接入主干前向**（thought_core_integration.py，推理增益 +0.078~+0.125 达 fb1"从模块到原生"门槛）。
     - **主动求知闭环（自我学习）**：certainty（KAL 真值锚校准 AUROC 0.769）→ 求知分支（inquiry_branch 四选一 RPL/LP）→ 求知执行器（inquiry_executor 交叉验证[绝不裸自我修正]+KnowledgeBlockWriter[累积不覆盖]）→ 知识内化（teaching_sft 内化行为可训）→ HRL 检索（train_retrieval_recall 已训 0.938）→ HCA 召回（GatedFusionMLP 扩容门控 0.625 破 585 瓶颈）→ 实时可用→ 睡眠固化（inquiry_consolidation CA1 门调速+三元奖励 RL+防错误固化）。统一 checkpoint（pilot_0p1b_gdn2_10k_unified）全链已训强度验证。
-    - **动态 tokenizer**：concept_slot 真实启用（kaplan_extract.py 真实 Kaplan 内词典提取），接入自我学习闭环（与求知知识块同存 BlockStore，载体边界：concept_slot=位置不变向量 vs 知识块=token 寻址）。
-    - **关键文档**：架构详图 v2.2（IBM Carbon）、数据集选型、知识内化训练、主动求知闭环、架构接入状态评估、思维能力强化设计文档（第二阶段）。
-  - **当前阶段**：0.1B pilot 能力基线已确认，进入 ① 门控上下文感知自适应（消除扩容门控副作用）② 1.5B 扩展规划（把 pilot 验证部件内生进 28 层主干）。
+    - **门控副作用根治**（fb1 P0）：记忆层条目迁移（memlayer_internalization_e2e.py，**根治**——in-context 0.688=基线零干扰，结构上无 gist 门控被波及）；解耦双通道门控（tri_attention_decoupled.py，注入召回隔离 0.625，副作用权衡）；彻底解耦（tri_attention_fully_decoupled.py，**诚实负结果**——0.1B 注入召回依赖扩容门控整体开权重状态，无法拆进独立 csa 通道复刻）；记忆层路径是正确方向（读出接口未训，召回待训）。
+    - **NIAH 长度扫描**（fb1 P1）：eval_niah_length_scan.py（512→4096×keys 8/32×双判据批量扫描）；**max_seq=1024 是真实架构硬限**（RoPE 缓存仅 1024 行，>1024 需扩容）；0.217 低值=GDN 状态饱和+first-token 判据过严双重。
+    - **动态 tokenizer**：concept_slot 真实启用（kaplan_extract.py 真实 Kaplan 内词典提取，ℓ3 实测最强），接入自我学习闭环（与求知知识块同存 BlockStore，载体边界：concept_slot=位置不变向量 vs 知识块=token 寻址）。
+    - **fb1 学术报告评审交叉验证**：整体可信（文献全核实），3 处措辞修正（TIAR 概念混用/校准漂移归因/副作用机理错配）；P0–P3 critical path（记忆层根治 P0、PM-stream 吞吐 P0、思考核接入 P1、校准 P1、NIAH 长度扫描 P1）。
+    - **关键文档**：架构详图 v2.2（IBM Carbon）、0.1B 学术报告 v1.0（IEEE 引用）、数据集选型、知识内化训练、主动求知闭环、架构接入状态评估、思维能力强化设计文档（第二阶段）。
+  - **当前阶段**：0.1B pilot 能力基线已确认，进入 ① **0.5B 模型训练**（数据准备+配置，3B tokens 多领域混合）② P1 校准 0.769→≥0.8 ③ 上下文扩充到 256K（RoPE 扩容+NTK+双卡训练）④ 1.5B 扩展规划。
 - **首要观测（T1）**：① KAL 探针强度（1.5B 未知）；② 内词典提取强度；③ PM-stream n=5 稳定性（0.1B 已通过）；④ 运行时记忆位置∈{HCA前/HCA后/并行}消融（Part Z）。
 - **设计冻结纪律**：Block Spec 是系统的"ISA"——页表、路由器、编译器、缺页处理各自迭代时不得偏离规范；任何里程碑退出标准未达成时，回检设计文档对应章节并修订。
 
