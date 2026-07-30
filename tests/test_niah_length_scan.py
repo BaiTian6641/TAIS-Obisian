@@ -135,13 +135,18 @@ def test_full_value_criterion_hit_and_miss(tok, rng):
     qpl = s["query_prefix_len"]
 
     # Case A：模型预测全对 → first/full 均命中
-    forced = [0] * qpl + qv_ids  # 查询位(next@qpl-1)=qv_ids[0]，其后增量步续 qv_ids[1:]
+    # _MockModel prefill 分支语义：位置 t 的输出 logits[0,t] 预测 forced[t]（即 next@t=forced[t]）。
+    # 查询判定位 = prefill 到 qpl 后位置 qpl-1 的 next-token——故 forced[qpl-1] 须=qv_ids[0]，
+    # forced[qpl:]=qv_ids[1:]（增量步续答）。off-by-one：forced=[0]*(qpl-1)+qv_ids。
+    forced = [0] * (qpl - 1) + qv_ids
     m = _MockModel(forced)
     # 模拟 eval_one_sample 的判据段：prefill 至 qpl，逐位判定
     cache = None
     q_logits = None
     for st in range(0, qpl, 512):
-        seg = s["ids"][st : st + 512]
+        # seg 截到 qpl（对齐 eval_one_sample“prefill 到查询前缀”语义：末段不得越入
+        # 查询 ids，否则 q_logits 取到查询内而非 qpl 位）
+        seg = s["ids"][st : min(st + 512, qpl)]
         logits, cache = m(torch.tensor([seg]), cache)
         if st + len(seg) >= qpl:
             q_logits = logits[0, -1].float()
@@ -152,12 +157,14 @@ def test_full_value_criterion_hit_and_miss(tok, rng):
 
     # Case B：首 token 对、第二 token 错 → first 命中、full 不命中（判据区分度）
     wrong = (qv_ids[-1] + 1) % 33000
-    forced_b = [0] * qpl + [qv_ids[0], wrong]
+    # off-by-one 同 Case A：forced_b[qpl-1]=qv_ids[0]（位置 qpl-1 预测首 token），
+    # forced_b[qpl]=wrong（增量步第二 token 错）
+    forced_b = [0] * (qpl - 1) + [qv_ids[0], wrong]
     m_b = _MockModel(forced_b)
     cache = None
     q_logits = None
     for st in range(0, qpl, 512):
-        seg = s["ids"][st : st + 512]
+        seg = s["ids"][st : min(st + 512, qpl)]  # 截到 qpl（同 Case A）
         logits, cache = m_b(torch.tensor([seg]), cache)
         if st + len(seg) >= qpl:
             q_logits = logits[0, -1].float()
@@ -188,10 +195,13 @@ def test_small_scan_smoke(tok, rng):
             # mock 模型（全 0 预测）走一遍判据流程（不崩即可）
             m = _MockModel([0] * (s["n_tokens"] + 8))
             cache = None
-            for st in range(0, s["query_prefix_len"], 512):
-                seg = s["ids"][st : st + 512]
+            qpl = s["query_prefix_len"]
+            for st in range(0, qpl, 512):
+                # seg 截到 qpl（对齐 eval_one_sample“prefill 到查询前缀”语义：
+                # 末段 chunk 不得越入查询 ids，否则 cache pos > qpl）
+                seg = s["ids"][st : min(st + 512, qpl)]
                 _, cache = m(torch.tensor([seg]), cache)
-            assert cache["pos"] == s["query_prefix_len"]
+            assert cache["pos"] == qpl
 
 
 def test_chunk_prefill_positions(tok):
@@ -200,15 +210,17 @@ def test_chunk_prefill_positions(tok):
     rng = np.random.default_rng(7)
     s = scan.build_niah_length_sample(rng, tok, None, 640, n_keys=8)
     # chunk=100（非对齐），逐块收集应有全部 8 个埋点 logits
-    forced_len = s["query_prefix_len"] + 8
+    qpl = s["query_prefix_len"]
+    forced_len = qpl + 8
     m = _MockModel([0] * forced_len)
     cache = None
     facts_logits: dict[int, torch.Tensor] = {}
-    for st in range(0, s["query_prefix_len"], 100):
-        seg = s["ids"][st : st + 100]
+    for st in range(0, qpl, 100):
+        # seg 截到 qpl（末段 chunk 不得越入查询 ids，否则 cache pos > qpl）
+        seg = s["ids"][st : min(st + 100, qpl)]
         logits, cache = m(torch.tensor([seg]), cache)
         for i, fe in enumerate(s["facts_end"]):
             if st < fe <= st + len(seg):
                 facts_logits[i] = logits[0, fe - 1 - st].float().cpu()
     assert len(facts_logits) == 8, f"跨 chunk 埋点收集丢失: {sorted(facts_logits)}"
-    assert cache["pos"] == s["query_prefix_len"]
+    assert cache["pos"] == qpl

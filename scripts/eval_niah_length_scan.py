@@ -138,6 +138,14 @@ def build_niah_length_sample(
         need = fill_budget - len(filler)
         off = int(rng.integers(0, max(val_ids.size - need, 1)))
         filler.extend(int(x) for x in val_ids[off : off + need])
+    # val_ids=None（结构测试/无 checkpoint）时用合成句填充到精确预算（否则 n_tokens 远小于
+    # target——val 缺失时 synth_budget 仅 1/5 且无补足路径）。n_sents 按保守 ~10 token/句
+    # 估算保证充足（每句实际 ~15-20 token），编码后截到精确 need。
+    if len(filler) < fill_budget:
+        need = fill_budget - len(filler)
+        n_sents = max(need // 10 + 1, 1)
+        sents = [FILLER_TEMPLATES[int(rng.integers(len(FILLER_TEMPLATES)))] for _ in range(n_sents)]
+        filler.extend(tok.encode(" " + " ".join(sents))[:need])
     filler = filler[:fill_budget]  # 截断到精确预算（filler 盈余时）
 
     # 埋点均匀分散：切成 n_keys+1 段，埋点置于段边界（gap≈fill_budget/(n_keys+1)）
