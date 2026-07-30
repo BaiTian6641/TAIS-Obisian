@@ -1,0 +1,16 @@
+{
+  "run_name": "pilot_0p1b_muon_smoke",
+  "out_dir": "checkpoints/pilot_0p1b_muon_smoke",
+  "optimizer": "muon",
+  "muon_lr": 0.02,
+  "lr": 1e-3,
+  "max_steps": 40,
+  "micro_batch": 8,
+  "grad_accum": 2,
+  "seq_len": 512,
+  "val_every": 20,
+  "val_batches": 5,
+  "log_every": 5,
+  "ckpt_every": 40,
+  "warmup": 10
+}

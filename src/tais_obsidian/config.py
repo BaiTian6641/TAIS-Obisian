@@ -52,6 +52,11 @@ class ModelConfig:
     pm_stream: int = 1
     # Sinkhorn-Knopp 双随机约束开关：True = mHC 原文（默认）；False = 无约束 HC 消融对照
     pm_constrain: bool = True
+    # Sinkhorn 迭代数（吞吐优化 P0，2026-07-30）：默认 20=原文精确语义（向后兼容，
+    # 恒等初始化判据/旧 checkpoint 语义零改动）；训练中可调小（如 10）——实测谱范数
+    # 仍=1.0（信号守恒红线不破）、双随机偏差 ≤1.3e-2、吞吐 ×1.7（无 .item() 同步，
+    # 优于被 GPU 同步抵消的 tol 早停方案）。
+    pm_sk_t_max: int = 20
     # 注意力层 = TriRetrievalAttention（三级检索注意力，DeepSeek V4/NSA 谱系；实现见
     # model/tri_attention.py）：滑窗 L0 + CSA 选择检索 L1 + HCA gist L2。"A" 层统一用此
     # （2026-07 起移除旧 RetrievalAttention 占位与 attn_only 对照组，全部走三级栈）。

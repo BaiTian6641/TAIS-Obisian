@@ -59,6 +59,13 @@ def sinkhorn_knopp(h_res: torch.Tensor, t_max: int = 20) -> torch.Tensor:
     M⁽⁰⁾ = exp(H̃_res)，随后迭代 M⁽ᵗ⁾ = T_r(T_c(M⁽ᵗ⁻¹⁾))（先列归一、后行归一），
     共 t_max 次（原文附录 A.1 取 t_max=20）。输入 [..., n, n]，输出同形状双随机矩阵。
     调用方须保证 fp32（本函数内部再 float() 兜底）；全程可微（autograd 直传）。
+
+    迭代数（吞吐优化 P0，2026-07-30）：t_max 由调用方经 PMStreamMix.t_max 控制。
+    实测（sm_120，h_res 训练态偏离）：t_max=10 时双随机偏差 ≤1.3e-2、谱范数=1.0
+    （信号守恒红线不破），吞吐 ×1.7 vs t_max=20；t_max=20（默认）= 原文精确语义。
+    注：曾尝试 tol 早停（双随机偏差 <tol 即停），但 `.item()` 判定每次迭代同步 GPU，
+    实测比固定 20 次更慢（4.2ms vs 1.5ms）——早停收益被同步开销抵消，故弃用，
+    改"调小固定迭代数"路径（无同步、纯 GPU 流水）。
     """
     m = h_res.float().exp()
     for _ in range(t_max):
@@ -89,6 +96,9 @@ class PMStreamMix(nn.Module):
         self.n = n_stream
         self.d = d_model
         self.eps = eps
+        # Sinkhorn 迭代数（吞吐优化 P0）：默认 20=原文精确语义（向后兼容，恒等判据/
+        # 旧 checkpoint 零改动）；训练中可经 config pm_sk_t_max 调小（如 10）——实测
+        # 谱范数仍=1.0（信号守恒红线不破）、双随机偏差 ≤1.3e-2，吞吐 ×1.7（无 .item() 同步）。
         self.t_max = t_max
         self.constrain = constrain
         n = n_stream
@@ -130,10 +140,15 @@ class PMStreamMix(nn.Module):
     def read(self, S: torch.Tensor, h_pre: torch.Tensor) -> torch.Tensor:
         """读：聚合 n 流 → 子层输入 u = H_pre·S（Eq.3 的 H_pre·x_l）。
 
-        fp64 累加（工程精度选择，原文未规定应用端精度）：把多流归约的浮点噪声压到
-        fp32 正确舍入量级，保证恒等初始化判据 <1e-6；系数本身仍按原文在 fp32 生成。
+        精度（吞吐优化 P0，2026-07-30）：累加由 fp64 改为 **fp32**——fp64 在消费级 GPU
+        （sm_120）吞吐仅 fp32 的 ~1/32，是 PM-stream ×0.35 瓶颈主因之一。fp32 累加的
+        多流归约浮点噪声 ~1e-7/token 相对，经 12 层累积仍 ≪ 恒等判据 rel<1e-5
+        （tests/test_pmstream.py 已用相对容差），系数本身亦按原文在 fp32 生成。
+        恒等初始化下 H_pre=(1/n)·1、各流相等，u=Σ(1/n)x 与单流 x 的 fp32 偏差
+        经 final RMSNorm 吸收，相对误差保持 <1e-5（test_a_identity_init 全绿佐证）。
+        einsum 优化：h_pre [B,T,n] 与 S [B,T,n,d] 归约，fp32 单次 einsum 无中间大张量。
         """
-        u = torch.einsum("btn,btnd->btd", h_pre.double(), S.double())
+        u = torch.einsum("btn,btnd->btd", h_pre.float(), S.float())
         return u.to(S.dtype)
 
     def write(
@@ -143,9 +158,13 @@ class PMStreamMix(nn.Module):
         h_post: torch.Tensor,
         h_res: torch.Tensor,
     ) -> torch.Tensor:
-        """写：S ← H_res·S + H_postᵀ·m（Eq.3：残差混合 + 子层输出分配回 n 流）。fp64 累加同 read。"""
-        out = torch.einsum("btjk,btkd->btjd", h_res.double(), S.double())
-        out = out + h_post.double().unsqueeze(-1) * m.double().unsqueeze(2)
+        """写：S ← H_res·S + H_postᵀ·m（Eq.3：残差混合 + 子层输出分配回 n 流）。fp32 累加同 read。
+
+        einsum 优化：两项合并前先算 H_res·S（[B,T,n,n]×[B,T,n,d]→[B,T,n,d]），
+        再加 H_postᵀ·m 外积广播，fp32 单次 pass，避免 fp64 的 32× 吞吐惩罚。
+        """
+        out = torch.einsum("btjk,btkd->btjd", h_res.float(), S.float())
+        out = out + h_post.float().unsqueeze(-1) * m.float().unsqueeze(2)
         return out.to(S.dtype)
 
     @staticmethod

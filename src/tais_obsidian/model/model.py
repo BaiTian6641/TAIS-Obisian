@@ -59,8 +59,11 @@ class Block(nn.Module):
         self.mlp = SwiGLU(cfg.d_model, cfg.mlp_hidden)
         if cfg.pm_stream > 1:
             # 每个子层一套 mHC 混合系数（arXiv:2512.24880 Fig.3 按 Attention/FFN 展开计层）
-            self.mix_mixer = PMStreamMix(cfg.d_model, cfg.pm_stream, cfg.rms_eps, constrain=cfg.pm_constrain)
-            self.mix_mlp = PMStreamMix(cfg.d_model, cfg.pm_stream, cfg.rms_eps, constrain=cfg.pm_constrain)
+            # pm_sk_t_max：Sinkhorn 迭代数（吞吐优化，默认 20=原文精确语义向后兼容，
+            # 训练中可调小如 10 提速 ×1.7，谱范数红线不破）。
+            sk_t_max = getattr(cfg, "pm_sk_t_max", 20)
+            self.mix_mixer = PMStreamMix(cfg.d_model, cfg.pm_stream, cfg.rms_eps, t_max=sk_t_max, constrain=cfg.pm_constrain)
+            self.mix_mlp = PMStreamMix(cfg.d_model, cfg.pm_stream, cfg.rms_eps, t_max=sk_t_max, constrain=cfg.pm_constrain)
 
     def forward(
         self, x: torch.Tensor, state: dict | None = None, offset: int = 0

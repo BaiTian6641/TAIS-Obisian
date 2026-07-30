@@ -50,6 +50,13 @@ DEFAULTS = dict(
     # 探针梯度只进 KAL 头（detach 主干，监测/执行分置红线）。
     kal_aux_weight=0.0,
     kal_sense_layers=None,  # 例 [4, 8]；None=全部 GDN 层
+    # 优化器选择（设计 §14.3/§21：预训练与 W4 固化同优化器 Muon，arXiv:2605.06654）：
+    # "adamw"（默认，pilot 向后兼容）| "muon"（2D 矩阵 Newton-Schulz 正交化 + 非 2D AdamW）。
+    optimizer="adamw",
+    muon_lr=0.02,          # Muon 组 lr（Muon 对 lr 不敏感，典型 0.02）
+    muon_momentum=0.95,    # Muon SGD-momentum
+    muon_ns_steps=5,       # Newton-Schulz 迭代步数
+    muon_per_head=False,   # Per-Head Muon（K3 借鉴：Q/K/V 按头分块正交化）
 )
 
 
@@ -63,8 +70,28 @@ def lr_at(step: int, cfg: dict) -> float:
     return cfg["lr"] * (cfg["max_steps"] - step) / (cfg["max_steps"] - decay_start)
 
 
-def build_optimizer(model: torch.nn.Module, cfg: dict) -> torch.optim.AdamW:
-    """decay 分组：≥2D 且非 embedding 的参数衰减；norm/1D/embedding 不衰减。"""
+def build_optimizer(model: torch.nn.Module, cfg: dict) -> torch.optim.Optimizer:
+    """按 cfg["optimizer"] 构建优化器（默认 adamw 向后兼容；muon 可选）。
+
+    decay 分组：≥2D 且非 embedding 的参数衰减；norm/1D/embedding 不衰减。
+    Muon（设计 §14.3/§21：预训练与 W4 固化同优化器，arXiv:2605.06654）：
+    2D 矩阵参数走 Newton-Schulz 正交化动量（lr=muon_lr），非 2D 走内部 AdamW（lr=lr）。
+    红线：Muon 只影响优化器更新，前向/反向计算图不变（GDN/PM-stream/grad ckpt 兼容）。
+    """
+    if cfg.get("optimizer", "adamw") == "muon":
+        from tais_obsidian.optim.muon import build_muon_optimizer
+
+        return build_muon_optimizer(
+            model,
+            muon_lr=cfg.get("muon_lr", 0.02),
+            adamw_lr=cfg["lr"],
+            weight_decay=cfg["weight_decay"],
+            per_head_qkv=cfg.get("muon_per_head", False),
+            n_heads=getattr(model.config, "n_q_heads", None),
+            head_dim=getattr(model.config, "head_dim", None),
+            momentum=cfg.get("muon_momentum", 0.95),
+            ns_steps=cfg.get("muon_ns_steps", 5),
+        )
     decay, no_decay = [], []
     for name, p in model.named_parameters():
         if not p.requires_grad:
