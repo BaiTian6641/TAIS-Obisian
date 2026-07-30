@@ -50,6 +50,7 @@ from .reasoning_loop import (
     trajectory_to_recall_tokens,
 )
 from .thought_core import ChannelGroupHistory, ThoughtCore, ThoughtTimeRotary
+from .thought_core_integration import ThoughtCoreIntegration
 from .thought_visualizer import (
     ThoughtTrajectory,
     ThoughtTrajectoryPoint,
@@ -85,6 +86,7 @@ __all__ = [
     "ReasoningTickState",
     "TaisObsidianForCausalLM",
     "ThoughtCore",
+    "ThoughtCoreIntegration",
     "ThoughtDisplacementWriter",
     "ThoughtManifold",
     "ThoughtManifoldBridge",

@@ -19,6 +19,7 @@ from .gdn import GDNBlock
 from .gdn2 import GDN2Block
 from .pmstream import PMStreamMix
 from .tais_kernel import TAISKernel
+from .thought_core_integration import ThoughtCoreIntegration
 from .tri_attention import TriRetrievalAttention
 
 
@@ -125,6 +126,9 @@ class TaisObsidianForCausalLM(nn.Module):
         self.kernel: TAISKernel | None = None
         if cfg.kernel_enabled:
             self.attach_kernel()
+        # 思考核接入挂点（第二阶段能力证明；默认 None 不挂，forward 行为零改动）。
+        # 经 attach_thought_core() 显式挂载后，forward(use_thought_core=True) 才走核路径。
+        self.thought_core_integration: ThoughtCoreIntegration | None = None
 
     def attach_kernel(self) -> None:
         """挂载 TAIS 内核（聚合 KAL/HRL 内生头，随 state_dict 存取）。
@@ -149,6 +153,30 @@ class TaisObsidianForCausalLM(nn.Module):
         # GDN 系层（"G"=GDN-1，"G2"=GDN-2）均为 KAL sense 读点（递归状态 W-State）
         return [i for i, t in enumerate(self.config.layer_types) if t in ("G", "G2")]
 
+    def attach_thought_core(
+        self,
+        core_dim: int = 384,
+        max_ticks: int = 8,
+        detach_backbone: bool = True,
+        use_sync: bool = True,
+    ) -> None:
+        """挂载思考核集成（第二阶段能力证明：接入主干前向，可选路径）。
+
+        桥接模块进 self.thought_core_integration（nn.Module 子模块），随 state_dict 存取。
+        幂等；设备/dtype 对齐主干 embedding（防 forward 设备不匹配）。
+        挂载后默认仍不影响前向——须 forward(use_thought_core=True) 才走核演化路径。
+        """
+        cfg = self.config
+        self.thought_core_integration = ThoughtCoreIntegration(
+            d_model=cfg.d_model, core_dim=core_dim, max_ticks=max_ticks,
+            manifold_dim=cfg.manifold_dim, use_sync=use_sync,
+            detach_backbone=detach_backbone,
+        )
+        p = self.embed.weight
+        self.thought_core_integration = self.thought_core_integration.to(
+            device=p.device, dtype=p.dtype
+        )
+
     @staticmethod
     def _init_weights(m: nn.Module) -> None:
         if isinstance(m, nn.Linear):
@@ -164,6 +192,8 @@ class TaisObsidianForCausalLM(nn.Module):
         run_kernel: bool = False,
         injector=None,
         inject_payloads: dict[int, list] | None = None,
+        use_thought_core: bool = False,
+        thought_core_max_ticks: int | None = None,
     ) -> tuple[torch.Tensor, dict] | tuple[torch.Tensor, dict, dict[int, torch.Tensor]]:
         """input_ids [B,T] → (logits [B,T,V], new_cache)；指定 capture_layers 时追加返回 captures。
 
@@ -221,6 +251,12 @@ class TaisObsidianForCausalLM(nn.Module):
                     captures[i] = x
                 if use_kernel and (sense_layers is None or i in sense_layers) and layer.type in ("G", "G2"):
                     kernel_signals[i] = {"sense": self.kernel.sense(x)}
+        # 思考核可选路径（第二阶段能力证明）：use_thought_core=True 且已挂载时，
+        # 在最终 norm_f 前对主干 hidden 做有界思考核演化（zero-init 门残差加回）。
+        # 默认 False（或未挂载）→ 跳过，前向与现状逐行一致（357 测试零改动）。
+        # 增量生成（cache 非 None）时单 token 也走核——但为吞吐默认只在 prefill 全序列走。
+        if use_thought_core and self.thought_core_integration is not None:
+            x = self.thought_core_integration(x, max_ticks=thought_core_max_ticks)
         x = self.norm_f(x)
         logits = F.linear(x, self.embed.weight)  # tied lm_head
         new_cache = {"pos": offset + input_ids.shape[1], "layers": new_states}
