@@ -25,7 +25,7 @@ import math
 import time
 from dataclasses import dataclass, field
 
-from ..runtime.ca1_gate import ca1_gate
+from ..runtime.ca1_gate import RE_VERIFY, ca1_gate, evidence_aware_consensus
 
 # 间隔提取练习的默认扩展间隔阶梯（秒；正式由衰减模型预测"快被遗忘"时刻）
 DEFAULT_SPACING_LADDER: tuple = (300, 900, 3600, 14400, 86400)
@@ -41,12 +41,19 @@ class W0Item:
     saliency: float = 1.0           # 写显著性头打分（高 arousal=惊讶=值得记）
     usage_count: int = 0
     belief_drift: float = 0.0       # 信念漂移（MemoryGraft 拦截）
-    teacher_consensus: float = 1.0  # GATES 共识度
+    teacher_consensus: float = 1.0  # GATES 共识度（v1.1 起=证据感知加权值）
     regression_ok: bool = True      # 回归验证（提取练习后由验证门更新）
     # 间隔提取练习状态
     last_review: float = field(default_factory=time.time)
     review_stage: int = 0           # 已到阶梯第几级
     strength: float = 1.0           # SHY 强度（归一化对象）
+    # v1.1 证据感知共识度分量（RE_VERIFY 二次评估重算用；缺省 0/空=旧构造兼容）
+    consensus_base: float = 0.0     # 静态主项（先验一致性×信源可信度；0=未填，回退 teacher_consensus）
+    verify_passes: int = 0          # 验证通过次数（含补验证历史）
+    verify_attempts: int = 0        # 验证总次数
+    consensus_boost: float = 0.0    # 补验证有界加成（≤ consolidator.reverify_boost）
+    reverify_attempts: int = 0      # 已用补验证重试次数（上限 max_reverify）
+    source: str = ""                # 信源（可信度在线学习归因用；""=未知）
 
 
 def cluster_by_temporal(items: list[W0Item], cluster_gap: float = 600.0) -> list[list[W0Item]]:
@@ -120,6 +127,10 @@ class ConsolidateReport:
     n_rejected: int = 0
     promoted_ids: list = field(default_factory=list)
     locked: bool = False
+    # v1.1 自适应 CA1 门：逐块最终裁决 + 补验证日志（原来只有计数，无法归因）
+    verdicts: dict = field(default_factory=dict)      # item_id → 最终裁决（PROMOTE/QUARANTINE/REJECT）
+    reverify_log: list = field(default_factory=list)  # 边缘带补验证逐条日志（透明可审计）
+    n_reverified: int = 0                             # 进入边缘带补验证的块数
 
 
 class SleepConsolidator:
@@ -131,12 +142,19 @@ class SleepConsolidator:
     """
 
     def __init__(self, ca1_thresholds: dict | None = None, cluster_gap: float = 600.0,
-                 salience_scale: float = 4.0):
+                 salience_scale: float = 4.0, reverify_fn=None, max_reverify: int = 1,
+                 reverify_boost: float = 0.05, evidence_weights=None):
         self.ca1_thresholds = ca1_thresholds or {}
         self.cluster_gap = cluster_gap
         # arousal 写门增益：saliency 超出基线 1.0 的部分 × salience_scale = 有效 usage 加成
         # （McGaugh 高唤醒优先巩固；默认 4.0，saliency=2.0 → +4 usage）。
         self.salience_scale = salience_scale
+        # v1.1 边缘带补验证：reverify_fn(item)->bool（CrossVerifier 二次复核/检索证据
+        # 复核等外部信号）；None 时边缘带 fail-closed 按 REJECT 落账（与旧行为一致）。
+        self.reverify_fn = reverify_fn
+        self.max_reverify = max_reverify          # 补验证重试上限（防无限重试）
+        self.reverify_boost = reverify_boost      # 复核通过的共识有界加成（≤0.05，防"补验证=必过"）
+        self.evidence_weights = evidence_weights  # EvidenceWeights（None 用默认）
         self._lock = False
 
     def lock_offline(self) -> None:
@@ -179,15 +197,12 @@ class SleepConsolidator:
                     # 编码时分子标签）对有效 usage 加成——高唤醒经验睡眠期优先巩固；
                     # saliency 只加成优先级，不触碰正确性判定（drift 拦截仍最优先）。
                     salience_boost = int(round(max(0.0, item.saliency - 1.0) * self.salience_scale))
-                    verdict = ca1_gate(
-                        item,
-                        regression_ok=item.regression_ok,
-                        usage_count=item.usage_count,
-                        teacher_consensus=item.teacher_consensus,
-                        belief_drift=item.belief_drift,
-                        salience_usage_boost=salience_boost,
-                        **self.ca1_thresholds,
-                    )
+                    verdict = self._gate(item, salience_boost)
+                    # v1.1 边缘带补验证重试（有上限、有日志、有界加成；fail-closed）
+                    if verdict == RE_VERIFY:
+                        rep.n_reverified += 1
+                        verdict = self._reverify(item, salience_boost, rep)
+                    rep.verdicts[item.item_id] = verdict
                     if verdict == "PROMOTE":
                         rep.n_promoted += 1
                         rep.promoted_ids.append(item.item_id)
@@ -201,6 +216,64 @@ class SleepConsolidator:
             self.unlock()
         rep.locked = False
         return rep
+
+    # ------------------------------------------------------------------
+    def _gate(self, item: W0Item, salience_boost: int) -> str:
+        """CA1 门调用（统一 kwargs；max_reverify 由编排侧注入，reverify_attempts 随 item）。"""
+        gate_kw = dict(self.ca1_thresholds)
+        gate_kw.pop("reverify_attempts", None)  # 尝试次数只能来自 item（防外部伪造）
+        gate_kw.setdefault("max_reverify", self.max_reverify)
+        return ca1_gate(
+            item,
+            regression_ok=item.regression_ok,
+            usage_count=item.usage_count,
+            teacher_consensus=item.teacher_consensus,
+            belief_drift=item.belief_drift,
+            salience_usage_boost=salience_boost,
+            reverify_attempts=item.reverify_attempts,
+            **gate_kw,
+        )
+
+    # ------------------------------------------------------------------
+    def _reverify(self, item: W0Item, salience_boost: int, rep: ConsolidateReport) -> str:
+        """边缘带补验证重试（v1.1）：外部复核信号 + 证据重算 → 二次入 CA1 门。
+
+        - 无 reverify_fn → fail-closed REJECT（与旧行为一致，不留悬空 RE_VERIFY）；
+        - reverify_fn(item)->bool：CrossVerifier 二次复核 / 检索证据复核等外部信号
+          （绝不裸自我修正——复核信号来自编排方注入的外部验证，非模型自我判断）；
+        - 复核通过：verify_passes+1 且 consensus_boost 加 reverify_boost（有界，
+          单次 ≤0.05——补验证不是必过通道）；复核失败：verify_attempts+1 摊薄
+          验证通过率（共识度不升反降）；
+        - 重算证据感知共识后二次入门（reverify_attempts 已达上限 → 不会再进带），
+          仍不达标 → REJECT。全程写 rep.reverify_log（透明可审计）。
+        """
+        entry = {"block_id": item.item_id, "consensus_before": float(item.teacher_consensus)}
+        if self.reverify_fn is None:
+            entry.update(passed=None, verdict="REJECT",
+                         note="边缘带但无 reverify_fn——fail-closed 按 REJECT 落账（同旧行为）")
+            rep.reverify_log.append(entry)
+            return "REJECT"
+        passed = bool(self.reverify_fn(item))
+        item.reverify_attempts += 1
+        item.verify_attempts += 1
+        if passed:
+            item.verify_passes += 1
+            # 有界加成：单次 ≤ reverify_boost（默认 0.05），不累积超界
+            item.consensus_boost = min(self.reverify_boost,
+                                       item.consensus_boost + self.reverify_boost)
+        # 证据重算：usage（检索证据，提取练习已 +1）+ 验证通过率 + 有界加成
+        base = item.consensus_base if item.consensus_base > 0 else item.teacher_consensus
+        item.teacher_consensus = evidence_aware_consensus(
+            base, item.usage_count, item.verify_passes, item.verify_attempts,
+            boost=item.consensus_boost, weights=self.evidence_weights)
+        verdict = self._gate(item, salience_boost)
+        if verdict == RE_VERIFY:  # 上限兜底（理论上 attempts 已满不会再进带）
+            verdict = "REJECT"
+        entry.update(passed=passed, attempts=item.reverify_attempts,
+                     consensus_after=float(item.teacher_consensus), verdict=verdict,
+                     note=("复核通过+有界加成" if passed else "复核未过，验证通过率摊薄"))
+        rep.reverify_log.append(entry)
+        return verdict
 
 
 def make_consolidator(**kw) -> SleepConsolidator:

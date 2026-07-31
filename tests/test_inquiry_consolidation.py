@@ -56,8 +56,14 @@ def test_adapter_converts_content_saliency_credibility() -> None:
     assert item.content == "地球绕太阳公转"
     assert item.saliency == 2.5
     assert item.usage_count == 7
-    # 无先验 → 一致性高基线 0.8；teacher_consensus = 0.8×(0.5+0.5×0.9)=0.76
-    assert item.teacher_consensus == pytest.approx(0.8 * (0.5 + 0.5 * 0.9))
+    # 无先验 → 一致性高基线 0.8；静态主项 base = 0.8×(0.5+0.5×0.9) = 0.76。
+    # 【行为变更 v1.1】旧口径 teacher_consensus = base = 0.76（纯信源先验）；
+    # 新口径 = 证据感知加权：0.85×0.76 + 0.10×(7/20) + 0.05×1.0 = 0.731
+    # （理由：修复信源可信度边缘效应——consensus 不再只由信源先验决定，
+    # 加入 usage 检索证据与验证通过率；user 源仍 ≥0.7 直接 PROMOTE，裁决不变）。
+    assert item.consensus_base == pytest.approx(0.8 * (0.5 + 0.5 * 0.9))
+    assert item.teacher_consensus == pytest.approx(
+        0.85 * 0.76 + 0.10 * (7 / 20) + 0.05 * 1.0)
     assert item.belief_drift == 0.0  # 无冲突 → 无漂移
 
 
@@ -181,7 +187,12 @@ def test_regression_gate_blocks_promotion() -> None:
 
 
 def test_unverified_block_low_consensus_not_promoted() -> None:
-    """未验证/低可信度块 teacher_consensus 低 → 不 PROMOTE（绝不裸自我修正）。"""
+    """未验证/低可信度块 teacher_consensus 低 → 不 PROMOTE（绝不裸自我修正）。
+
+    【行为保持 v1.1】旧口径 consensus=0.55c+0<0.7 REJECT；新证据加权口径
+    consensus=0.85×0.55c+0.10×1.0+0.05×1.0 ≤ 0.6175 < 0.62 边缘带下沿——
+    直接 REJECT，**连补验证资格都没有**（弱证据仍弱更新红线：补验证不是必过通道）。
+    """
     store = BlockStore()
     # 低可信度 + 与先验冲突 → teacher_consensus 低 → CA1 门 REJECT
     store.put("inquiry/w:v1", _payload("弱证据知识", credibility=0.1, conflict=False),

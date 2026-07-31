@@ -16,7 +16,14 @@
 """
 from .blockstore import BlockStore
 from .bus import MemoryBus
-from .ca1_gate import CA1Gate, ca1_gate
+from .ca1_gate import (
+    RE_VERIFY,
+    CA1Gate,
+    EvidenceWeights,
+    SourceCredibilityTracker,
+    ca1_gate,
+    evidence_aware_consensus,
+)
 from .ca3_ppr import ca3_ppr
 from .kernel_orchestrator import KernelOrchestrator, OrchestrateOut, RecallDecision, make_orchestrator
 from .pagetable import KNOWN_KINDS, BlockSpec, PageTable
@@ -37,6 +44,10 @@ __all__ = [
     "make_orchestrator",
     "CA1Gate",
     "ca1_gate",
+    "RE_VERIFY",
+    "EvidenceWeights",
+    "evidence_aware_consensus",
+    "SourceCredibilityTracker",
     "ca3_ppr",
     "save_state",
     "restore_state",

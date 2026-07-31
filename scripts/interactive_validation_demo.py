@@ -64,7 +64,7 @@ from tais_obsidian.model.inquiry_executor import (  # noqa: E402
 from tais_obsidian.model.manifold import ThoughtManifold  # noqa: E402
 from tais_obsidian.model.path_integration import GridCodeProbe  # noqa: E402
 from tais_obsidian.runtime.blockstore import BlockStore  # noqa: E402
-from tais_obsidian.runtime.ca1_gate import ca1_gate  # noqa: E402
+from tais_obsidian.runtime.ca1_gate import SourceCredibilityTracker  # noqa: E402
 from tais_obsidian.sleep.consolidator import SleepConsolidator  # noqa: E402
 from tais_obsidian.sleep.inquiry_consolidation import (  # noqa: E402
     InquirySleepConsolidation,
@@ -396,19 +396,64 @@ def phase_c_probes(model, tok, prompts: list[dict], dev, manifold: ThoughtManifo
 # ---------------------------------------------------------------------------
 # Phase D：睡眠固化（CA1 门裁决 + 逐块理由）
 # ---------------------------------------------------------------------------
+def make_cross_verify_fn(executor):
+    """CrossVerifier 二次复核回调（CA1 门 v1.1 边缘带 RE_VERIFY 用）。
+
+    对块内容重跑交叉验证：verified 且无不决冲突 → True。检索证据强度（usage/HRL
+    命中计数）已在证据感知共识公式中计入，本回调提供第二路独立验证信号
+    （绝不裸自我修正：复核来自 CrossVerifier 外部验证，非模型自我判断）。
+    """
+    def verify_fn(item) -> bool:
+        ev = Evidence(content=str(item.content), source=item.source or "doc")
+        verified, _consist, conflict = executor.verifier.verify(ev, executor._knowledge)
+        return bool(verified) and not conflict
+    return verify_fn
+
+
+def _ca1_verdict_reason(item, verdict: str, salience_boost: int, rv: dict | None) -> str:
+    """按 CA1 门规则分支（按序，前者优先）+ v1.1 边缘带补验证日志生成逐块理由。"""
+    if item.belief_drift > 0.5:
+        return (f"belief_drift={item.belief_drift:.2f}>0.5：冲突未决→QUARANTINE "
+                f"保留双方标分歧（MemoryGraft 拦截，不静默覆盖；自适应不触碰漂移拦截）")
+    eff_usage = item.usage_count + salience_boost
+    if eff_usage < 10 or not item.regression_ok:
+        return (f"有效 usage={eff_usage}<10 或回归未过"
+                f"（regression_ok={item.regression_ok}）→REJECT（验证门）")
+    if rv is not None:  # 进入边缘带 [0.62, 0.7) 的补验证路径
+        if rv.get("passed") is None:
+            return (f"teacher_consensus={rv['consensus_before']:.3f}∈[0.62,0.7) 边缘带，"
+                    f"但无补验证回调→fail-closed REJECT（同旧行为）")
+        if rv.get("passed"):
+            return (f"边缘带 RE_VERIFY：consensus={rv['consensus_before']:.3f}∈[0.62,0.7) "
+                    f"→ CrossVerifier 二次复核通过+有界加成 → {rv['consensus_after']:.3f}"
+                    f"→{rv['verdict']}（补验证修复信源可信度边缘效应）")
+        return (f"边缘带 RE_VERIFY：consensus={rv['consensus_before']:.3f}∈[0.62,0.7) "
+                f"→ 二次复核未过（验证通过率摊薄至 {rv['consensus_after']:.3f}）→REJECT"
+                f"（补验证不放水）")
+    if verdict == "PROMOTE":
+        return (f"usage={item.usage_count}≥10 且回归通过 且 "
+                f"consensus={item.teacher_consensus:.3f}≥0.7→PROMOTE（一致快固化，同化）")
+    return (f"teacher_consensus={item.teacher_consensus:.3f}<0.62 边缘带下沿：证据不足"
+            f"→REJECT（弱证据仍弱更新，不进补验证带）")
+
+
 def sleep_consolidate(store: BlockStore, model_embed, namespace: str = "inquiry",
                       usage_count: int = 12, saliency: float = 1.0,
-                      regression_ok: bool = True):
+                      regression_ok: bool = True, verify_fn=None, cred_tracker=None):
     """对 namespace 下 draft 块跑睡眠固化；返回 (ConsolidateReport, 逐块裁决理由 list)。
 
-    逐块理由与 consolidator 内部**同规则同参数**复算（CA1 门纯函数 ca1_gate：
-    drift>0.5→QUARANTINE；usage<10 或回归未过→REJECT；consensus<0.7→REJECT；
-    否则 PROMOTE），理由串标明触发的规则分支。固化不改块 draft 标记（consolidate
-    只读+SHY 归一化 item 副本），重复调用幂等。
+    v1.1 起逐块最终裁决以 consolidator 报告为唯一来源（report.verdicts /
+    reverify_log），不再"同规则同参数复算"CA1 门（旧口径报告只有计数才需复算）：
+      - 证据感知共识 = 0.85·先验一致性×信任度 + 0.10·usage/20 + 0.05·验证通过率；
+      - consensus ∈ [0.62, 0.7) 边缘带 → RE_VERIFY 补验证（verify_fn=CrossVerifier
+        二次复核；None 时 fail-closed 按 REJECT 落账，与旧行为一致）；
+      - cred_tracker：信源可信度在线学习（None=静态 payload 值，向后兼容）。
+    固化不改块 draft 标记（consolidate 只读+SHY 归一化 item 副本），重复调用幂等。
     """
-    isc = InquirySleepConsolidation(embed_fn=model_embed)
+    isc = InquirySleepConsolidation(embed_fn=model_embed, credibility_tracker=cred_tracker)
     salience_boost = int(round(max(0.0, saliency - 1.0) * 4.0))  # consolidator salience_scale=4.0
-    per_block = []
+    # 逐块证据分量快照（理由展示用；最终裁决以 consolidator report.verdicts 为准）
+    snapshots: dict = {}
     for tier in ("L0", "L1", "L2"):
         od = store._store.get(tier)  # 只读遍历（不触发 get 的 usage/recency 副作用）
         if od is None:
@@ -423,41 +468,36 @@ def sleep_consolidate(store: BlockStore, model_embed, namespace: str = "inquiry"
             item = isc.adapter.to_w0item(bid, payload, None, saliency=saliency,
                                          usage_count=usage_count)
             item.regression_ok = item.regression_ok and regression_ok
-            verdict = ca1_gate(
-                item, regression_ok=item.regression_ok, usage_count=item.usage_count,
-                teacher_consensus=item.teacher_consensus, belief_drift=item.belief_drift,
-                salience_usage_boost=salience_boost)
-            # 理由 = CA1 门规则分支（按序，前者优先）
-            if item.belief_drift > 0.5:
-                reason = (f"belief_drift={item.belief_drift:.2f}>0.5：冲突未决→QUARANTINE "
-                          f"保留双方标分歧（MemoryGraft 拦截，不静默覆盖）")
-            elif item.usage_count + salience_boost < 10 or not item.regression_ok:
-                reason = (f"有效 usage={item.usage_count + salience_boost}<10 或回归未过"
-                          f"（regression_ok={item.regression_ok}）→REJECT（验证门）")
-            elif item.teacher_consensus < 0.7:
-                reason = (f"teacher_consensus={item.teacher_consensus:.2f}<0.7：GATES "
-                          f"共识度不足→REJECT（信源可信度弱，弱证据弱更新）")
-            else:
-                reason = (f"usage={item.usage_count}≥10 且回归通过 且 "
-                          f"consensus={item.teacher_consensus:.2f}≥0.7→PROMOTE（一致快固化，同化）")
-            per_block.append({
-                "block_id": bid, "verdict": verdict, "reason": reason,
-                "content": payload.get("content", "")[:80],
-                "source": payload.get("source"), "conflict": bool(payload.get("conflict", False)),
-                "teacher_consensus": float(item.teacher_consensus),
-                "belief_drift": float(item.belief_drift),
-            })
-    consolidator = SleepConsolidator()
+            snapshots[bid] = (item, payload)
+    consolidator = SleepConsolidator(reverify_fn=verify_fn)
     report = isc.consolidate_inquiry_blocks(
         store, consolidator, prior_knowledge=None, namespace=namespace,
         usage_count=usage_count, saliency=saliency, regression_ok=regression_ok)
+    reverify_by_id = {e["block_id"]: e for e in report.reverify_log}
+    per_block = []
+    for bid, (item, payload) in snapshots.items():
+        verdict = report.verdicts.get(bid, "REJECT")
+        rv = reverify_by_id.get(bid)
+        per_block.append({
+            "block_id": bid, "verdict": verdict,
+            "reason": _ca1_verdict_reason(item, verdict, salience_boost, rv),
+            "content": payload.get("content", "")[:80],
+            "source": payload.get("source"), "conflict": bool(payload.get("conflict", False)),
+            "teacher_consensus": float(item.teacher_consensus),
+            "belief_drift": float(item.belief_drift),
+            "reverify": rv,
+        })
     return report, per_block
 
 
 @torch.no_grad()
 def phase_d_sleep(model, tok, store, executor, model_embed, facts, dev, a_layers,
                   add_conflict: bool = True) -> dict:
-    """Phase B 写入块（+1 条冲突块）→ 睡眠固化 CA1 门裁决计数 + 逐块理由。"""
+    """Phase B 写入块（+1 条冲突块）→ 睡眠固化 CA1 门裁决计数 + 逐块理由。
+
+    v1.1 自适应 CA1 门：接 CrossVerifier 补验证回调（边缘带 RE_VERIFY）+
+    信源可信度在线学习 tracker（报告前后对照）。
+    """
     conflict_block = None
     if add_conflict and facts:
         f0 = facts[0]
@@ -468,12 +508,17 @@ def phase_d_sleep(model, tok, store, executor, model_embed, facts, dev, a_layers
         bid_bad = executor.writer.write(ev_bad, store, namespace="inquiry",
                                         conflict=True, consistency=consist_b)  # 强制标冲突
         conflict_block = {"block_id": bid_bad, "content": wrong, "conflict_flag": True}
-    report, per_block = sleep_consolidate(store, model_embed)
+    tracker = SourceCredibilityTracker()
+    cred_before = dict(tracker.cred)
+    report, per_block = sleep_consolidate(
+        store, model_embed, verify_fn=make_cross_verify_fn(executor), cred_tracker=tracker)
     return {
         "n_clusters": report.n_clusters, "n_practiced": report.n_practiced,
         "n_promoted": report.n_promoted, "n_quarantined": report.n_quarantined,
         "n_rejected": report.n_rejected, "promoted_ids": report.promoted_ids,
         "per_block": per_block, "conflict_block": conflict_block,
+        "n_reverified": report.n_reverified, "reverify_log": report.reverify_log,
+        "credibility_before": cred_before, "credibility_after": dict(tracker.cred),
     }
 
 
@@ -711,9 +756,14 @@ def main() -> None:
     print("=" * 70)
     pd = phase_d_sleep(model, tok, store, executor, model_embed, facts, dev, a_layers)
     print(f"  固化报告：分簇={pd['n_clusters']} 提取={pd['n_practiced']} "
-          f"PROMOTE={pd['n_promoted']} QUARANTINE={pd['n_quarantined']} REJECT={pd['n_rejected']}")
+          f"PROMOTE={pd['n_promoted']} QUARANTINE={pd['n_quarantined']} REJECT={pd['n_rejected']}"
+          f"（边缘带补验证 {pd['n_reverified']} 块）")
     for b in pd["per_block"]:
         print(f"    [{b['verdict']}] {b['block_id']}（{b['source']}）: {b['reason']}")
+    ca, cb = pd.get("credibility_after", {}), pd.get("credibility_before", {})
+    if ca:
+        delta = ", ".join(f"{k} {cb.get(k, 0):.2f}→{v:.2f}" for k, v in sorted(ca.items()))
+        print(f"  信源可信度在线学习（本轮固化后 EMA）：{delta}")
 
     # ── 汇总 + 面板 ──
     meta = {"ckpt": args.ckpt, "tokenizer": args.tokenizer, "n_facts": len(facts),

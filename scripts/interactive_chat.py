@@ -48,6 +48,7 @@ if hasattr(sys.stdin, "reconfigure"):  # 管道输入 UTF-8（Git Bash echo 中�
 
 from tais_obsidian.model.inquiry_branch import InquiryRouter  # noqa: E402
 from tais_obsidian.runtime.blockstore import BlockStore  # noqa: E402
+from tais_obsidian.runtime.ca1_gate import SourceCredibilityTracker  # noqa: E402
 
 import interactive_validation_demo as ivd  # 共享原语库（不重复造轮子）  # noqa: E402
 
@@ -80,6 +81,8 @@ class Session:
         self.executor, self.model_embed = ivd.make_executor(
             self.model, self.tok, self.a_layers, dev, self.store)
         self.taught: list[dict] = []  # [{fact, written, action, kv}]
+        # v1.1 信源可信度在线学习（会话级，跨多次 /sleep 累积 EMA）
+        self.cred_tracker = SourceCredibilityTracker()
         self.turn = 0
         self.log_path = Path(log_path)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -265,20 +268,29 @@ class Session:
     # /sleep
     # ------------------------------------------------------------------
     def cmd_sleep(self) -> None:
-        report, per_block = ivd.sleep_consolidate(self.store, self.model_embed)
+        # v1.1 自适应 CA1 门：CrossVerifier 二次复核回调（边缘带 RE_VERIFY）+
+        # 会话级信源可信度在线学习 tracker
+        report, per_block = ivd.sleep_consolidate(
+            self.store, self.model_embed,
+            verify_fn=ivd.make_cross_verify_fn(self.executor),
+            cred_tracker=self.cred_tracker)
         if report.n_practiced == 0:
             print("  ⚠️ 无 inquiry draft 块可固化（先 /teach 写入）")
             self.log("sleep", n_practiced=0)
             return
         print(f"  [sleep] 固化报告：分簇={report.n_clusters} 提取={report.n_practiced} "
               f"PROMOTE={report.n_promoted} QUARANTINE={report.n_quarantined} "
-              f"REJECT={report.n_rejected}")
+              f"REJECT={report.n_rejected}（边缘带补验证 {report.n_reverified} 块）")
         for b in per_block:
             print(f"    [{b['verdict']}] {b['block_id']}（{b['source']}）: {b['reason']}")
+        cred = dict(self.cred_tracker.cred)
+        print(f"  信源可信度（会话级 EMA）："
+              + ", ".join(f"{k}={v:.2f}" for k, v in sorted(cred.items())))
         self.log("sleep", n_clusters=report.n_clusters, n_practiced=report.n_practiced,
                  n_promoted=report.n_promoted, n_quarantined=report.n_quarantined,
-                 n_rejected=report.n_rejected, promoted_ids=report.promoted_ids,
-                 per_block=per_block)
+                 n_rejected=report.n_rejected, n_reverified=report.n_reverified,
+                 promoted_ids=report.promoted_ids, per_block=per_block,
+                 credibility=cred, reverify_log=report.reverify_log)
 
 
 def main() -> None:

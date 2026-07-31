@@ -115,12 +115,31 @@ def test_phase_a_fake_certainty_low(mini_run):
 
 
 def test_phase_d_verdicts_present(mini_run):
-    """Phase D：睡眠固化有裁决产出（含冲突块注入后 CA1 门裁决）。"""
+    """Phase D：睡眠固化裁决 + v1.1 自适应边缘带（doc 源经 RE_VERIFY 补验证固化）。
+
+    【行为变更 v1.1】旧口径：doc 源（cred 0.7）consensus=0.8×0.85=0.68<0.7 被一刀切
+    REJECT——本 fixture 旧期望为 PROMOTE 1（user）/QUARANTINE 1（冲突）/REJECT 1（doc）。
+    新口径：doc 源证据加权共识 0.688 落边缘带 [0.62,0.7) → CrossVerifier 二次复核
+    通过+有界加成 → PROMOTE——新期望 PROMOTE 2/QUARANTINE 1/REJECT 0。
+    变更理由：修复信源可信度边缘效应（工具来源知识系统性进不了长期记忆）；
+    冲突块 QUARANTINE 红线不变（自适应不触碰漂移拦截）。
+    """
     pd = mini_run["phase_d_sleep"]
     n_verdicts = pd["n_promoted"] + pd["n_quarantined"] + pd["n_rejected"]
     assert n_verdicts >= 1, "固化应有裁决产出"
     assert len(pd["per_block"]) == n_verdicts or pd["n_practiced"] >= 1
-    # 冲突块应被 QUARANTINE（保留双方标分歧红线）
+    # 冲突块应被 QUARANTINE（保留双方标分歧红线；自适应不触碰漂移拦截）
     conflict_verdicts = [b["verdict"] for b in pd["per_block"] if b["conflict"]]
     assert conflict_verdicts and all(v == "QUARANTINE" for v in conflict_verdicts), (
         f"冲突块应 QUARANTINE：{conflict_verdicts}")
+    # v1.1 自适应：已教事实（非冲突）全部固化——fact0 走 CallTool→doc 源（边缘效应
+    # 现场信源）经 RE_VERIFY 补验证通过，fact1 走 AskQuestion→user 源直接 PROMOTE
+    taught = [b for b in pd["per_block"] if not b["conflict"]]
+    assert taught and all(b["verdict"] == "PROMOTE" for b in taught), (
+        f"已教事实应全部固化（v1.1 修复信源边缘效应）："
+        f"{[(b['source'], b['verdict']) for b in taught]}")
+    doc_blocks = [b for b in taught if b["source"] == "doc"]
+    assert doc_blocks, "n_facts=2 时 fact0（priority 0.6）应走 CallTool→doc 源"
+    for b in doc_blocks:
+        assert b["reverify"] and b["reverify"]["passed"] is True, (
+            f"doc 源应经 RE_VERIFY 补验证通过（非直接放行）：{b['block_id']}")

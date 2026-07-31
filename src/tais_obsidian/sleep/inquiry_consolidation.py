@@ -39,6 +39,10 @@ import torch
 import torch.nn.functional as F
 
 from ..runtime.blockstore import BlockStore
+from ..runtime.ca1_gate import (
+    SourceCredibilityTracker,
+    evidence_aware_consensus,
+)
 from .consolidator import ConsolidateReport, SleepConsolidator, W0Item
 
 # ---------------------------------------------------------------------------
@@ -68,11 +72,17 @@ class InquiryW0Adapter:
     （一致快/冲突慢）。[推测/独创] pilot 表征余弦近似，正式应多源检索 + 外部锚。
     """
 
-    def __init__(self, embed_fn=None):
+    def __init__(self, embed_fn=None, credibility_tracker: SourceCredibilityTracker | None = None,
+                 evidence_weights=None):
         """embed_fn: callable(str)->Tensor[d]，文本→表征（先验一致性语义相似度用；
         pilot 可注入 mock/hash；正式接模型 capture_layers hidden state）。None 时
-        退化为字符级 hash 投影（仅演示，与 CrossVerifier 同一占位策略）。"""
+        退化为字符级 hash 投影（仅演示，与 CrossVerifier 同一占位策略）。
+        credibility_tracker: v1.1 信源可信度在线学习器（None=用 payload 静态值，
+        向后兼容）；设置后 credibility 取 tracker 的 EMA 当前值（按 payload source）。
+        evidence_weights: v1.1 证据感知共识权重 EvidenceWeights（None 用默认）。"""
         self.embed_fn = embed_fn
+        self.credibility_tracker = credibility_tracker
+        self.evidence_weights = evidence_weights
 
     # ------------------------------------------------------------------
     def _embed(self, text: str) -> torch.Tensor:
@@ -140,10 +150,23 @@ class InquiryW0Adapter:
         content = payload.get("content", "")
         # 先验一致性 → teacher_consensus 映射（§4.2 CA1 门"与先验一致性"作固化速度
         # 调控变量；同时信任度加权 source_credibility 进入 consensus，§4.1 Jeffrey）
+        source = str(payload.get("source", ""))
         credibility = float(payload.get("source_credibility", 0.5))
+        if self.credibility_tracker is not None and source:
+            # v1.1 信源可信度在线学习：取 EMA 当前值（未知信源按 payload 值登记）
+            credibility = self.credibility_tracker.get(source, default=credibility)
         consistency = self.prior_consistency(content, prior_knowledge)
-        # teacher_consensus = 先验一致性 × 信任度加权（弱证据弱更新，精度加权预测误差）
-        teacher_consensus = consistency * (0.5 + 0.5 * credibility)
+        # 静态主项 = 先验一致性 × 信任度加权（弱证据弱更新，精度加权预测误差）
+        base = consistency * (0.5 + 0.5 * credibility)
+        # v1.1 证据感知共识度：静态主项 + 动态证据项（usage 检索证据 + 验证通过率）
+        # 加权组合——修复"信源先验一刀切"边缘效应（doc 源 0.68 恰低于 0.7 被系统性
+        # REJECT）；权重 EvidenceWeights 默认 w_base0.85/w_usage0.10/w_verify0.05。
+        verified = bool(payload.get("verified", True))
+        verify_passes = int(payload.get("verify_passes", 1 if verified else 0))
+        verify_attempts = int(payload.get("verify_attempts", 1))
+        teacher_consensus = evidence_aware_consensus(
+            base, usage_count, verify_passes, verify_attempts,
+            weights=self.evidence_weights)
         # 冲突标记 → belief_drift（冲突未决→漂移升高，CA1 门拦截到 QUARANTINE 慢通道）
         conflict = bool(payload.get("conflict", False))
         belief_drift = 0.9 if conflict else 0.0  # 冲突→高漂移（挡在慢通道）
@@ -155,7 +178,11 @@ class InquiryW0Adapter:
             usage_count=usage_count,
             belief_drift=belief_drift,
             teacher_consensus=teacher_consensus,
-            regression_ok=bool(payload.get("verified", True)),  # 写入时已交叉验证
+            regression_ok=verified,  # 写入时已交叉验证
+            consensus_base=base,
+            verify_passes=verify_passes,
+            verify_attempts=verify_attempts,
+            source=source,
         )
 
 
@@ -263,10 +290,18 @@ class InquirySleepConsolidation:
     冲突块（dispute）走慢通道（QUARANTINE 保留双方，不静默覆盖）。
     """
 
-    def __init__(self, embed_fn=None, abstain_reward: float = _DEFAULT_ABSTAIN_REWARD):
-        self.adapter = InquiryW0Adapter(embed_fn=embed_fn)
+    def __init__(self, embed_fn=None, abstain_reward: float = _DEFAULT_ABSTAIN_REWARD,
+                 credibility_tracker: SourceCredibilityTracker | None = None,
+                 evidence_weights=None):
+        """credibility_tracker: v1.1 信源可信度在线学习器（None=静态 payload 值，
+        向后兼容）；设置后固化时按 EMA 当前可信度计算共识，固化结束按逐块裁决
+        回写学习（PROMOTE→成功上调 / 共识侧 REJECT→失败下调 / QUARANTINE 与
+        usage·回归门 REJECT→不更新）。evidence_weights: 证据感知共识权重配置。"""
+        self.adapter = InquiryW0Adapter(embed_fn=embed_fn, credibility_tracker=credibility_tracker,
+                                        evidence_weights=evidence_weights)
         self.gate = PriorConsistencyGate(embed_fn=embed_fn)
         self.tri_reward = TriRewardRL(abstain_reward=abstain_reward)
+        self.credibility_tracker = credibility_tracker
 
     # ------------------------------------------------------------------
     def consolidate_inquiry_blocks(
@@ -329,9 +364,29 @@ class InquirySleepConsolidation:
             # （CA1 门独立判定，先验一致性已通过 teacher_consensus/belief_drift 进入）。
             _ = (consistency, fast_track)  # 调速读出已映射，CA1 门最终裁决
 
-        # 睡眠固化：分簇回放→间隔提取练习→CA1 门（regression_ok 验证门+drift 拦截）
-        # →SHY 归一化；冲突块 drift 高→QUARANTINE 保留双方（累积不覆盖）。
-        return consolidator.consolidate(items, recall_fn=recall_fn)
+        # 睡眠固化：分簇回放→间隔提取练习→CA1 门（regression_ok 验证门+drift 拦截
+        # +v1.1 边缘带补验证）→SHY 归一化；冲突块 drift 高→QUARANTINE 保留双方
+        # （累积不覆盖）。
+        report = consolidator.consolidate(items, recall_fn=recall_fn)
+
+        # v1.1 信源可信度在线学习：按逐块最终裁决回写 EMA（成功上调/失败下调，
+        # 截断 [0.3,0.95]）。QUARANTINE（冲突未决保留双方）与 usage/回归门 REJECT
+        # （年轻块未过用量/验证门，非信源质量问题）不更新——只奖励/惩罚证据质量。
+        if self.credibility_tracker is not None:
+            min_usage = int(consolidator.ca1_thresholds.get("min_usage", 10))
+            for item in items:
+                if not item.source:
+                    continue
+                verdict = report.verdicts.get(item.item_id)
+                if verdict == "PROMOTE":
+                    self.credibility_tracker.update(item.source, 1.0)
+                elif verdict == "REJECT":
+                    sal_boost = int(round(max(0.0, item.saliency - 1.0) * consolidator.salience_scale))
+                    consensus_side = (item.regression_ok
+                                      and item.usage_count + sal_boost >= min_usage)
+                    if consensus_side:  # 共识侧 REJECT（含补验证未过）→ 信源失败信号
+                        self.credibility_tracker.update(item.source, 0.0)
+        return report
 
 
 def make_inquiry_sleep_consolidation(**kw) -> InquirySleepConsolidation:
