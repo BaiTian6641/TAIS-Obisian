@@ -22,6 +22,7 @@
 | `architecture-integration-status.md` | 架构接入状态评估 |
 | `unified-checkpoint.md` | 统一 checkpoint（pilot_0p1b_gdn2_10k_unified）合并方案与全链强度 |
 | `hardware-dual-gpu.md` | 双卡硬件（PRO 4000 + 4070）分工 |
+| `0p5b-training-dual-gpu-dp.md` | **0.5B 训练+双卡 DP+3B 数据集**（512.8M 配置/重叠 DP 3.1k tok/s +24%/Muon×WSD 修复/训练进行中）|
 | `training-efficiency.md` | 训练吞吐与显存效率 |
 
 ### 2. 门控副作用根治（fb1 P0，最终方向：记忆层）

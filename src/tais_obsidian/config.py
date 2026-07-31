@@ -26,6 +26,19 @@ class ModelConfig:
     n_kv_heads: int = 4
     head_dim: int = 64
     rope_theta: float = 10000.0
+    # RoPE 上下文扩充（fb1 P1，2026-07-31；只作用于三级栈滑窗分支——全架构唯一
+    # RoPE 负载，CSA/HCA 为 NoPE、GDN 无位置编码）。默认 none/1.0 = 与旧版逐 bit 一致。
+    # rope_scaling: "none"（仅扩缓存行数——滑窗分支注意力分数只依赖相对距离 ≤tri_window，
+    #   RoPE 相对性保证数学上精确，扩窗是纯工程解除硬限）| "yarn"（YaRN 逐维 ramp 插值，
+    #   arXiv:2309.00071；设计文档 §3 明确"训练内 YaRN"，OLMo 3 实证谱系——高频维
+    #   精确不动保局部区分，低频维插值 1/scale，供 1.5B CSA partial-RoPE 及消融使用）。
+    # rope_scale: 目标窗口/原始窗口（>1 且 yarn 时生效；如 1024→256K = 256）。
+    # rope_original_max_seq: YaRN ramp 的原始训练长度 L_orig（None → max_seq/scale 回填）。
+    # 断点兼容：旧 checkpoint config.json 无这三个字段 → dataclass 默认值 none/1.0/None，
+    # 行为与旧版逐 bit 一致（同 gdn_decay_g_min 回填纪律，此处默认值即兼容无需特判）。
+    rope_scaling: str = "none"
+    rope_scale: float = 1.0
+    rope_original_max_seq: int | None = None
     # GDN
     n_v_heads: int = 12
     n_qk_heads: int = 6

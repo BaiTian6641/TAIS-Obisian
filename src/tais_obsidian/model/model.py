@@ -143,6 +143,35 @@ class TaisObsidianForCausalLM(nn.Module):
         p = self.embed.weight
         self.kernel = self.kernel.to(device=p.device, dtype=p.dtype)
 
+    def extend_context(
+        self,
+        max_seq: int,
+        rope_scaling: str | None = None,
+        rope_scale: float | None = None,
+        rope_original_max_seq: int | None = None,
+    ) -> None:
+        """原地扩窗：改 config 的 max_seq/rope_scaling/rope_scale 并重建全部 A 层 RoPE 缓存。
+
+        供渐进扩窗（scripts/extend_context.py）从旧 checkpoint 出发解除 RoPE 行数硬限；
+        权重零改动（RoPE 缓存 persistent=False 不进 state_dict）。save_pretrained 会把
+        新字段随 config.json 持久化，from_pretrained 按新配置直接构建同尺寸缓存。
+        """
+        cfg = self.config
+        cfg.max_seq = int(max_seq)
+        if rope_scaling is not None:
+            cfg.rope_scaling = rope_scaling
+        if rope_scale is not None:
+            cfg.rope_scale = float(rope_scale)
+        if rope_original_max_seq is not None:
+            cfg.rope_original_max_seq = int(rope_original_max_seq)
+        n = 0
+        for layer in self.layers:
+            if isinstance(layer.mixer, TriRetrievalAttention):
+                layer.mixer.rebuild_rope_cache()
+                n += 1
+        print(f"[extend_context] max_seq={cfg.max_seq} scaling={cfg.rope_scaling} "
+              f"scale={cfg.rope_scale}（{n} 个 A 层 RoPE 缓存已重建）")
+
     def kernel_sense_index(self) -> list[int]:
         """KAL sense 读点层索引（config.kernel_sense_layers；空=全部 GDN 层）。
 

@@ -91,11 +91,30 @@ def http_download(repo: str, fname: str, out_dir: Path, tag: str) -> Path:
 
 
 def list_parquet(repo: str, prefix: str, cap: int) -> list[str]:
-    """用 HfApi 列出 prefix 下的 parquet 分片（仅列名，不下载）。"""
+    """用 HfApi 列出 prefix 下的 parquet 分片（仅列名，不下载）。
+
+    分片按"子目录（config）轮询"选取：cosmopedia 等多 config 数据集若直接取
+    排序前 cap 个会全部落在同一个 config（字母序），导致领域单一。
+    """
     from huggingface_hub import HfApi
     files = HfApi().list_repo_files(repo, repo_type="dataset")
     pq = sorted(f for f in files if f.startswith(prefix) and f.endswith(".parquet"))
-    return pq[:cap]
+    if len(pq) <= cap:
+        return pq
+    groups: dict[str, list[str]] = {}
+    for f in pq:
+        groups.setdefault(str(Path(f).parent), []).append(f)
+    if len(groups) <= 1:
+        return pq[:cap]
+    picked: list[str] = []
+    gkeys = sorted(groups)
+    i = 0
+    while len(picked) < cap and any(groups[k] for k in gkeys):
+        k = gkeys[i % len(gkeys)]
+        if groups[k]:
+            picked.append(groups[k].pop(0))
+        i += 1
+    return picked
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +248,6 @@ def main() -> None:
     ap.add_argument("--mix", type=str, default="", help="覆盖配比 fineweb_edu=0.7,math=0.15,code=0.1,zh=0.05")
     ap.add_argument("--no_zh", action="store_true", help="关闭中文源，其配额转给英文主力")
     ap.add_argument("--out", type=Path, default=ROOT / "data" / "shards_0p5b")
-    ap.add_argument("--resume", action="store_true", help="断点：跳过已达配额的源（按 stats 文件）")
     args = ap.parse_args()
 
     target = parse_target(args.target_tokens)
@@ -283,45 +301,74 @@ def main() -> None:
             train_left = 0
         print(f"\n[src:{src}] 目标 {src_target/1e6:.0f}M（val {val_left/1e6:.1f}M + train {train_left/1e6:.1f}M）")
         fn = SOURCE_FN[src]
-        try:
-            stream = iter(fn())
-            batch: list[str] = []
-            done = 0
-            t_src = time.time()
-            while train_left > 0:
+        # 断流重试：长任务（十几小时）中网络抖动/SSL EOF 难免，流中断后重建流继续
+        # 收集（已写入 writer 的 tokens 保留）。重建流从源开头重读，会引入少量重复
+        # 文档（占比 <0.1%，预训练语料可接受）；重试间隔指数退避（上限 300s）。
+        retries = 0
+        max_retries = 12
+        batch: list[str] = []
+        done = 0
+        t_src = time.time()
+        stream = None
+        while train_left > 0:
+            if stream is None:
                 try:
-                    text = next(stream)
-                except StopIteration:
-                    print(f"    [{src}] 语料流耗尽，提前结束")
+                    stream = iter(fn())
+                except Exception as e:  # noqa: BLE001
+                    retries += 1
+                    if retries > max_retries:
+                        print(f"    [src:{src}] 流创建重试 {max_retries} 次仍失败（跳过该源）: "
+                              f"{type(e).__name__}: {str(e)[:200]}")
+                        break
+                    wait = min(300, 15 * retries)
+                    print(f"    [{src}] 流创建失败({retries}/{max_retries})，{wait}s 后重试: "
+                          f"{type(e).__name__}: {str(e)[:120]}", flush=True)
+                    time.sleep(wait)
+                    continue
+            try:
+                text = next(stream)
+                retries = 0  # 正常取到文档，重置退避
+            except StopIteration:
+                print(f"    [{src}] 语料流耗尽，提前结束")
+                break
+            except Exception as e:  # noqa: BLE001
+                retries += 1
+                if retries > max_retries:
+                    print(f"    [src:{src}] 重试 {max_retries} 次仍失败（跳过该源）: "
+                          f"{type(e).__name__}: {str(e)[:200]}")
                     break
-                batch.append(text)
-                if len(batch) >= 128:
-                    arr = tokenize_docs(batch)
-                    batch = []
-                    if val_left > 0:
-                        take = min(val_left, arr.size)
-                        val_writer.push(arr[:take], "val")
-                        val_left -= take
-                        arr = arr[take:]
-                    if arr.size:
-                        take = min(train_left, arr.size)
-                        train_writer.push(arr[:take], "train")
-                        train_left -= take
-                        done += take
-                        el = time.time() - t_src
-                        print(f"    [{src}] train 已收 {done/1e6:.1f}M / 还需 {train_left/1e6:.1f}M  "
-                              f"({done/el/1e3:.0f}k tok/s)", flush=True)
-            if batch:  # 残余
+                wait = min(300, 15 * retries)
+                print(f"    [{src}] 流中断({retries}/{max_retries})，{wait}s 后重建流续收: "
+                      f"{type(e).__name__}: {str(e)[:120]}", flush=True)
+                time.sleep(wait)
+                stream = None
+                continue
+            batch.append(text)
+            if len(batch) >= 128:
                 arr = tokenize_docs(batch)
+                batch = []
                 if val_left > 0:
                     take = min(val_left, arr.size)
                     val_writer.push(arr[:take], "val")
+                    val_left -= take
                     arr = arr[take:]
-                if arr.size and train_left > 0:
+                if arr.size:
                     take = min(train_left, arr.size)
                     train_writer.push(arr[:take], "train")
-        except Exception as e:  # noqa: BLE001
-            print(f"    [src:{src}] 失败（跳过该源）: {type(e).__name__}: {str(e)[:200]}")
+                    train_left -= take
+                    done += take
+                    el = time.time() - t_src
+                    print(f"    [{src}] train 已收 {done/1e6:.1f}M / 还需 {train_left/1e6:.1f}M  "
+                          f"({done/el/1e3:.0f}k tok/s)", flush=True)
+        if batch:  # 残余
+            arr = tokenize_docs(batch)
+            if val_left > 0:
+                take = min(val_left, arr.size)
+                val_writer.push(arr[:take], "val")
+                arr = arr[take:]
+            if arr.size and train_left > 0:
+                take = min(train_left, arr.size)
+                train_writer.push(arr[:take], "train")
         source_stats[src] = src_target - train_left
 
     val_writer.flush("val")

@@ -26,16 +26,16 @@
 ### 2.1 代码结构
 
 - `src/tais_obsidian/`：框架包（`uv pip install -e .` 后可 import）
-  - `config.py`：ModelConfig dataclass + JSON 读写（含 `pm_stream`/`pm_constrain`/`tri_*`/`tri_use_indexer`/`kernel_*` 开关；**2026-07 起移除 `attn_only`/`attn_impl`，注意力层统一为三级栈**）
+  - `config.py`：ModelConfig dataclass + JSON 读写（含 `pm_stream`/`pm_constrain`/`tri_*`/`tri_use_indexer`/`kernel_*` 开关；`rope_scaling`/`rope_scale`/`rope_original_max_seq` 上下文扩充开关，默认 none 向后兼容；**2026-07 起移除 `attn_only`/`attn_impl`，注意力层统一为三级栈**）
   - `model/`：`gdn.py`（GDN-MemBlock：naive_recurrent + chunked 双路径，纯 PyTorch）、`tri_attention.py`（**TriRetrievalAttention 三级检索注意力**：滑窗 L0 + CSA 选择检索 L1 + HCA 128:1 gist L2 + NSA 式门控融合 + `inject_hca_entries` + 可选 `tri_use_indexer` 独立 LightningIndexer）、`model.py`（`TaisObsidianForCausalLM`，tied embedding，自研 `save_pretrained`/`from_pretrained`；`forward(capture_layers=..., run_kernel=..., inject_payloads=...)` hidden-state 捕获 + 内核挂点）、`blockpath.py`（块通路：BlockCompressor stride-4 压缩器 + 块 KV 收割/注入 + namespace 五元组 fail-closed）、`pmstream.py`（E+-5 PM-stream：mHC 多流残差 arXiv:2512.24880，恒等初始化 <1e-6）、`kal.py`（E+-3 KAL 分层元认知头：L1 P(IK) W[d,3] + L2 valence/arousal W[d,2]）、`tais_kernel.py`（TAIS 内核：聚合 KAL + HRL Indexer + DG + 侧信道头簇，sense/route/inject）、`hrl_indexer.py`（LightningIndexer：DSA 式独立检索打分器）、`memlayer.py`（增强 A 记忆层：product-key KV + GDN-2 erase/write 解耦 delta 写）、`injection.py`（注入闭环）、`dyn_vocab.py`（动态词表 concept_slot）
   - `runtime/`：运行时服务（`pagetable.py` 页表 SQLite、`blockstore.py` 块存储 usage_weighted、`pager.py` 缺页 fail-closed、`bus.py` Memory Bus、`ca1_gate.py` 巩固门、`ca3_ppr.py` 联想、`state_ckpt.py` GDN 状态持久化、`safety.py` 安全管线）
   - `sleep/`：`consolidator.py`（睡眠巩固器：分簇回放 + 间隔提取练习 + CA1 门 + SHY 归一化）
   - `data/memmap.py`：uint16 bin shard 读写与 batch 采样；`tokenizer_io.py`：tokenizer 封装
   - `train.py`：训练循环（bf16 autocast + fp32 参数、AdamW 分组、WSD 调度、grad clip 1.0、checkpoint/resume、tensorboard；config JSON 可加 `pm_stream`/`tri_*`/`kal_aux_weight` 开关；**注意：1.5B T1 起按设计文档改 Muon 优化器**）
   - `generate.py`：cache 增量生成（temperature/top-k）
-- `configs/`：`pilot_0p1b.json`（hybrid 基线）、`pilot_0p1b_pm.json`（PM-stream 消融）、`pilot_0p1b_tri.json`（三级栈消融）、`pilot_0p1b_pmtri.json`（组合）；**`pilot_0p1b_attn.json`（attn_only 孪生）已于 2026-07 移除（对照组废弃）**
-- `scripts/`：`check_env.py`（环境自检）、`prepare_data.py`（FineWeb-Edu → 训 32k BPE → 120M tokens shards）、`smoke_overfit.py` / `smoke_overfit_pm.py` / `smoke_overfit_tri.py`（三变体过拟合冒烟）、`extend_tokenizer.py`（E+-2 特殊 token 扩容，幂等）、`kal_probe.py`（E+-3 KAL 探针管线，输出 `runs/kal_probe/report.json`）
-- `tests/`（**412 项 pytest 全绿**，2026-07-30）：第一阶段 M0–M8 测试（test_gdn/cache/capture/blockpath/pmstream/tri_attention/tri_indexer/kal/tokenizer_ext/tais_kernel/kernel_wiring/kernel_route_candidates/hrl/hrl_init/gdn2_indexer/runtime/injection/sleep/dyn_vocab/safety）+ 第二阶段（test_manifold/manifold_bridge/thought_core/reasoning_loop/cot_projection/thought_visualizer/path_integration/thinking_e2e/thinking_real_adapter/thought_core_integration）+ 主动求知（test_inquiry_branch/inquiry_executor/inquiry_consolidation/active_inquiry_full_chain）+ 知识内化（test_teaching_data/internalization_e2e/retrieval_recall/gated_fusion/kaplan_extract/unified_checkpoint/memlayer_internalization）+ 门控自适应（test_decoupled_gate/fully_decoupled/niah_length_scan）+ 优化（test_muon）
+- `configs/`：`pilot_0p1b.json`（hybrid 基线）、`pilot_0p1b_pm.json`（PM-stream 消融）、`pilot_0p1b_tri.json`（三级栈消融）、`pilot_0p1b_pmtri.json`（组合）；**`pilot_0p1b_attn.json`（attn_only 孪生）已于 2026-07 移除（对照组废弃）**；`pilot_0p5b_gdn2.json`（**0.5B GDN-2 预训练**：512.8M 参数 d1280×24 层，Muon，max_steps 22900 ≈ 3B tokens 单卡口径）
+- `scripts/`：`check_env.py`（环境自检）、`prepare_data.py`（FineWeb-Edu → 训 32k BPE → 120M tokens shards）、`prepare_data_0p5b.py`（**0.5B 3B tokens 多领域混合**：fineweb_edu 70%/NuminaMath 15%/cosmopedia 10%/FineWeb2-HQ 中文 5%，断流重试加固，输出 data/shards_0p5b）、`train_dp.py`（**双卡手动 DP**：WorkerNode 线程化+时间均衡 accum，3.1k tok/s +24%，Windows 无 NCCL 单进程实现）、`smoke_overfit.py` / `smoke_overfit_pm.py` / `smoke_overfit_tri.py`（三变体过拟合冒烟）、`extend_tokenizer.py`（E+-2 特殊 token 扩容，幂等）、`kal_probe.py`（E+-3 KAL 探针管线，输出 `runs/kal_probe/report.json`）、`kal_truth_finetune_v2.py`（**P1 校准 v2**：锚集扩充 AUROC 0.845/0.829 双口径达标；预测反馈循环诚实负结果）、`extend_context.py`（**渐进扩窗**：RoPE 缓存扩容至 256K + YaRN scaling + 阶段课程微调，复用 train.py 组件）、`bench_long_seq_cost.py`（长 seq 成本实测：CSA/HCA 打分随 T²、滑窗 math-SDPA 显存随 T²）
+- `tests/`（**418 项 pytest 全绿**，2026-07-30）：第一阶段 M0–M8 测试（test_gdn/cache/capture/blockpath/pmstream/tri_attention/tri_indexer/kal/tokenizer_ext/tais_kernel/kernel_wiring/kernel_route_candidates/hrl/hrl_init/gdn2_indexer/runtime/injection/sleep/dyn_vocab/safety）+ 第二阶段（test_manifold/manifold_bridge/thought_core/reasoning_loop/cot_projection/thought_visualizer/path_integration/thinking_e2e/thinking_real_adapter/thought_core_integration）+ 主动求知（test_inquiry_branch/inquiry_executor/inquiry_consolidation/active_inquiry_full_chain）+ 知识内化（test_teaching_data/internalization_e2e/retrieval_recall/gated_fusion/kaplan_extract/unified_checkpoint/memlayer_internalization）+ 门控自适应（test_decoupled_gate/fully_decoupled/niah_length_scan）+ 优化（test_muon）+ 校准（test_kal_calibration_v2）
 - 不入库：`data/`（tokenizer + shards）、`checkpoints/`、`runs/`、`logs/`
 - **待建（对齐《接口与实现计划》§1 包结构）**：`model/` 增 `tais_kernel.py`（M1 内核骨架）、`hrl_heads.py`、`memlayer.py`、`injection.py`；新建 `runtime/`（bus/pager/pagetable/blockstore/ca3_ppr/ca1_gate/awakener/**state_ckpt**）与 `sleep/`（consolidator/distill）包。
 
@@ -46,7 +46,7 @@
 - 环境自检：`python scripts/check_env.py`
 - 数据准备：`python scripts/prepare_data.py`
 - 冒烟测试：`python scripts/smoke_overfit.py`（`_pm`/`_tri` 变体同理）
-- 单元测试：`python -m pytest tests/ -q`（25 项）
+- 单元测试：`python -m pytest tests/ -q`（418 项）
 - 训练：`python -m tais_obsidian.train --config configs/<cfg>.json`（续训加 `--resume checkpoints/<run>/latest.pt`；长任务加 `python -u` 防输出缓冲）
 - 推理：`python -m tais_obsidian.generate --ckpt checkpoints/<run>/final --prompt "..."`
 
@@ -105,8 +105,10 @@
     - **NIAH 长度扫描**（fb1 P1）：eval_niah_length_scan.py（512→4096×keys 8/32×双判据批量扫描）；**max_seq=1024 是真实架构硬限**（RoPE 缓存仅 1024 行，>1024 需扩容）；0.217 低值=GDN 状态饱和+first-token 判据过严双重。
     - **动态 tokenizer**：concept_slot 真实启用（kaplan_extract.py 真实 Kaplan 内词典提取，ℓ3 实测最强），接入自我学习闭环（与求知知识块同存 BlockStore，载体边界：concept_slot=位置不变向量 vs 知识块=token 寻址）。
     - **fb1 学术报告评审交叉验证**：整体可信（文献全核实），3 处措辞修正（TIAR 概念混用/校准漂移归因/副作用机理错配）；P0–P3 critical path（记忆层根治 P0、PM-stream 吞吐 P0、思考核接入 P1、校准 P1、NIAH 长度扫描 P1）。
+    - **0.5B 训练管线（2026-07-30）**：3B tokens 多领域数据集（data/shards_0p5b：fineweb_edu 70%/NuminaMath 15%/cosmopedia 10%/中文 5%，断流重试加固）+ 0.5B 配置（512.8M，d1280×24，Muon）+ 双卡手动 DP（train_dp.py 线程化重叠 3.1k tok/s +24%）+ **Muon×WSD set_lr 修复**（Muon 组 lr 此前恒值不衰减）+ 单卡 PRO 4000 训练中。**P1 校准达标**：锚集扩充 AUROC 0.845/0.829（预测反馈循环诚实负结果，双臂择优保存 A 臂）。**Unsloth 评估诚实负结果**（仅支持标准 HF 架构，自研 GDN-2+三级栈不适用）；替代加速：FP8 _scaled_mm 双卡可用 ~1.7×、torch.compile 评估中。
     - **关键文档**：架构详图 v2.2（IBM Carbon）、0.1B 学术报告 v1.0（IEEE 引用）、数据集选型、知识内化训练、主动求知闭环、架构接入状态评估、思维能力强化设计文档（第二阶段）。
-  - **当前阶段**：0.1B pilot 能力基线已确认，进入 ① **0.5B 模型训练**（数据准备+配置，3B tokens 多领域混合）② P1 校准 0.769→≥0.8 ③ 上下文扩充到 256K（RoPE 扩容+NTK+双卡训练）④ 1.5B 扩展规划。
+  - **当前阶段**：0.5B 预训练进行中（22900 步 ≈ 3B tokens，单卡 PRO 4000）；P1 校准 ✅ 达标；③ **上下文扩充工程已落地**（2026-07-31：RoPE 缓存扩容至 256K + YaRN scaling + extend_context.py 渐进扩窗 + NIAH 复测，见 docs/上下文扩充256K_实施计划.md；0.5B 256K 课程待 0.5B 预训练完成后执行）；推进 ④ 记忆层读出/寻址接口训练（门控副作用根治+召回兼得统一解）⑤ 1.5B 扩展规划。
+- **GPU 纪律（2026-07-30 事故教训）**：①训练期间严禁其他进程碰训练 GPU（4070 近满时一个 FP8 基准崩掉 82 分钟训练）；②bench 测速必须 GPU 空闲时做（并发测速致 DP 配比失真慢 35%）；③训练循环改动必须 3 步冒烟再长跑（set_lr 重构 NameError 事故）。
 - **首要观测（T1）**：① KAL 探针强度（1.5B 未知）；② 内词典提取强度；③ PM-stream n=5 稳定性（0.1B 已通过）；④ 运行时记忆位置∈{HCA前/HCA后/并行}消融（Part Z）。
 - **设计冻结纪律**：Block Spec 是系统的"ISA"——页表、路由器、编译器、缺页处理各自迭代时不得偏离规范；任何里程碑退出标准未达成时，回检设计文档对应章节并修订。
 

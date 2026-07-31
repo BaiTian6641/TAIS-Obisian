@@ -67,6 +67,63 @@ from .blockpath import NamespaceMismatchError, check_namespace, make_namespace
 from .common import RMSNorm
 
 
+def _yarn_scaled_inv_freq(
+    inv_freq: torch.Tensor,
+    scale: float,
+    original_max_seq: int,
+    beta_fast: float = 32.0,
+    beta_slow: float = 1.0,
+) -> tuple[torch.Tensor, float]:
+    """YaRN 逐维 ramp 插值（arXiv:2309.00071 §3.3；设计文档 §3"训练内 YaRN"）。
+
+    对每个频率维 i：波长 λ_i = 2π/inv_freq_i，r_i = L_orig/λ_i，
+    ramp γ_i = clamp((r_i − β_slow)/(β_fast − β_slow), 0, 1)（β_slow=1, β_fast=32 为原文默认），
+    插值 inv'_i = inv_i·[(1−γ_i)/scale + γ_i]：
+    - 高频维（λ_i ≤ L_orig/32，γ=1）：**精确不动**——局部（短距离）位置区分逐 bit 保持；
+    - 低频维（λ_i ≥ L_orig，γ=0）：全插值 1/scale——把 scale 倍位置范围压回训练所见相位域；
+    - 中间维按比例混合（保单调、无相位跳变）。
+
+    返回 (inv', mscale)：mscale = 0.1·ln(scale)+1 为 YaRN logit 温度修正（论文 §3.4
+    插值致注意力分布变平坦的补偿；q/k 各乘 √mscale → logits × mscale）。
+    """
+    if scale <= 1.0:
+        return inv_freq, 1.0
+    wavelengths = 2.0 * math.pi / inv_freq  # λ_i
+    r = original_max_seq / wavelengths  # r_i = L_orig/λ_i
+    gamma = ((r - beta_slow) / (beta_fast - beta_slow)).clamp(0.0, 1.0)
+    inv_scaled = inv_freq * ((1.0 - gamma) / scale + gamma)
+    mscale = 0.1 * math.log(scale) + 1.0
+    return inv_scaled, mscale
+
+
+def _build_rope_cache(cfg: ModelConfig, head_dim: int) -> tuple[torch.Tensor, torch.Tensor, float]:
+    """按 cfg 构建滑窗分支 RoPE 缓存 → (cos [max_seq, D/2], sin, mscale)。
+
+    - scaling="none" 且 max_seq ≤ 8192：旧式 fp32 构造（与 2026-07-31 前版本逐 bit 一致，
+      既有 checkpoint/测试数值零漂移）；
+    - scaling="yarn" 或 max_seq > 8192：fp64 计算 cos/sin 后落 fp32——大位置（如 256K）
+      下 fp32 直接算 t·inv_freq 的辐角误差达 ~3e-2 rad（最高频维），fp64 构造把它压到
+      1e-7 量级（仅缓存构建期一次性成本）。
+    - rope_original_max_seq 缺省回填 max_seq/scale（如 262144/256 → 1024）。
+    """
+    inv_freq = 1.0 / (cfg.rope_theta ** (torch.arange(0, head_dim, 2).float() / head_dim))
+    mscale = 1.0
+    scaling = getattr(cfg, "rope_scaling", "none")
+    scale = float(getattr(cfg, "rope_scale", 1.0))
+    if scaling == "yarn" and scale > 1.0:
+        orig = getattr(cfg, "rope_original_max_seq", None) or max(1, int(round(cfg.max_seq / scale)))
+        inv_freq, mscale = _yarn_scaled_inv_freq(inv_freq, scale, orig)
+    elif scaling not in ("none", "yarn"):
+        raise ValueError(f"未知 rope_scaling={scaling!r}（支持 none/yarn）")
+    if scaling == "none" and cfg.max_seq <= 8192:
+        t = torch.arange(cfg.max_seq).float()
+        freqs = torch.outer(t, inv_freq)
+        return freqs.cos(), freqs.sin(), mscale
+    t = torch.arange(cfg.max_seq, dtype=torch.float64)
+    freqs = torch.outer(t, inv_freq.to(torch.float64))
+    return freqs.cos().float(), freqs.sin().float(), mscale
+
+
 class ChunkCompressor(nn.Module):
     """V4 式 softmax 门控池化压缩器（无重叠，stride:1）：连续 stride 个 token 的 k/v 各压成 1 条目。
 
@@ -147,14 +204,27 @@ class TriRetrievalAttention(nn.Module):
         # 避免被 model._init_weights 的 nn.Linear 规则覆盖 → init 精确均等 1/3，记录见 docstring）
         self.gate_w = nn.Parameter(torch.zeros(3, self.head_dim))
         self.gate_b = nn.Parameter(torch.full((3,), -math.log(2.0)))  # sigmoid(-ln2) = 1/3
-        # RoPE 缓存 [max_seq, head_dim/2]（与 TriRetrievalAttention 同一构造，half-split NeoX 风格）
-        inv_freq = 1.0 / (cfg.rope_theta ** (torch.arange(0, self.head_dim, 2).float() / self.head_dim))
-        t = torch.arange(cfg.max_seq).float()
-        freqs = torch.outer(t, inv_freq)
-        self.register_buffer("rope_cos", freqs.cos(), persistent=False)
-        self.register_buffer("rope_sin", freqs.sin(), persistent=False)
+        # RoPE 缓存 [max_seq, head_dim/2]（half-split NeoX 风格；唯一构造点——
+        # tri_attention_gated/decoupled/fully_decoupled 变体均 attach 到本类实例、
+        # 复用本缓冲与 _rope，故全部经此一处覆盖）。max_seq 可扩至 256K：
+        # 每行 32 float32 ×2（cos/sin）≈ 256B，256K 行 ≈ 67MB/层（0.1B 3 个 A 层 ≈ 201MB）。
+        # scaling/YaRN 见 _build_rope_cache；默认 none 与旧版逐 bit 一致。
+        cos, sin, self.rope_mscale = _build_rope_cache(cfg, self.head_dim)
+        self.register_buffer("rope_cos", cos, persistent=False)
+        self.register_buffer("rope_sin", sin, persistent=False)
         # namespace 校验用层号（由 model.__init__ 按层序写入；standalone 使用需手动设置）
         self.layer_idx: int = -1
+
+    def rebuild_rope_cache(self) -> None:
+        """按当前 self.cfg 原地重建 RoPE 缓存（扩窗/scaling 变更后调用，keep 设备）。
+
+        供 scripts/extend_context.py 与 model.extend_context() 在加载旧 checkpoint 后
+        扩 max_seq / 切 scaling 用；权重不动（缓存 persistent=False 本就不进 state_dict）。
+        """
+        cos, sin, self.rope_mscale = _build_rope_cache(self.cfg, self.head_dim)
+        dev = self.rope_cos.device
+        self.register_buffer("rope_cos", cos.to(dev), persistent=False)
+        self.register_buffer("rope_sin", sin.to(dev), persistent=False)
 
     def _rope(self, x: torch.Tensor, offset: int) -> torch.Tensor:
         # x: [B, T, H, D]，half-split（NeoX 风格）旋转（与 TriRetrievalAttention._rope 同一实现）
@@ -165,7 +235,11 @@ class TriRetrievalAttention(nn.Module):
         sin = torch.cat([sin, sin], dim=-1)[None, :, None, :]
         x1, x2 = x[..., : self.head_dim // 2], x[..., self.head_dim // 2 :]
         rot = torch.cat([-x2, x1], dim=-1)
-        return x * cos + rot * sin
+        out = x * cos + rot * sin
+        if self.rope_mscale != 1.0:
+            # YaRN logit 温度修正：q/k 各乘 √mscale → 滑窗 logits × mscale（仅 yarn 生效）
+            out = out * math.sqrt(self.rope_mscale)
+        return out
 
     def inject_hca_entries(
         self,
