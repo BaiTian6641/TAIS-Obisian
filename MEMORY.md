@@ -6,10 +6,16 @@
 
 ## 0. 三十秒速览
 
-- 项目：自研纯 PyTorch LLM 研究框架（GDN-2 线性注意力 + 三级检索注意力 + PM-stream + KAL 元认知 + HRL 检索），目标 1.5B 原生 1M 上下文自学习验证机；当前在 0.5B 预训练阶段。
-- **本次会话完成**：3B tokens 多领域数据集 ✅、0.5B 配置（512.8M）✅、双卡 DP 脚本 ✅、Muon×WSD bug 修复 ✅、**P1 校准达标（AUROC 0.845/0.829）✅**、Unsloth 适用性评估（诚实负结果）✅、FP8/torch.compile 探测 ✅。
-- **下一步队列**（按优先级）：① 新机 0.5B 预训练（22900 步 ≈ 3B tokens）→ ② RoPE 扩容+NTK 到 256K（渐进扩窗）→ ③ 记忆层读出/寻址接口训练（无副作用 0.688 + 召回 0.625 兼得的统一解）→ ④ 0.5B 上重测 KAL 校准 → ⑤ 1.5B 扩展规划。
-- 云端启动：见 `scripts/cloud/README.md`（环境→同步→续训三步）。
+- 项目：自研纯 PyTorch LLM 研究框架（GDN-2 线性注意力 + 三级检索注意力 + PM-stream + KAL 元认知 + HRL 检索），目标 1.5B 原生 1M 上下文自学习验证机；当前在 **1B/10B tokens Colab 训练**阶段。
+- **最新主线（2026-07-31）**：放弃本地双卡路线，转 **Google Colab G4（RTX PRO 6000 Blackwell 96GB）** 一次跑完 1B 预训练 9B + 中训练退火 1B，训完上传 HuggingFace。**全部前置已就绪**——
+  - 代码：P0/P1 审阅修复全落地（437 pytest 全绿），tokenizer 随权重、export_final.py、resume 加固、generate 守卫、`--init_from` 中训练初始化；
+  - 配置：`configs/pilot_1b_gdn2.json`（实测 1017.7M，d1536×32，Muon）；
+  - 数据：`scripts/prepare_data_1b.py`（10B 四源流式、断点续跑、max_id 扫描，全量 ETA 3-5h）；
+  - 执行：`notebooks/TAIS_1B_Colab.ipynb`（28 cells 纯 Python，逐 cell AST 校验）；
+  - 计划详情：`docs/Colab_1B训练计划.md`（含事实核查冲突点处置）。
+- **此前完成**：3B 数据集、0.5B 配置（512.8M）、双卡 DP（3.1k tok/s）、Muon×WSD set_lr 修复、**P1 校准达标 0.845/0.829**、RoPE 扩容初版（rope_scaling none/yarn + extend_context.py）、Unsloth/FP8/torch.compile 评估。
+- **1B 训练后任务**：①推理测试（generate/val/KAL 探针迁移）→ ②RoPE 渐进扩窗到 256K → ③记忆层读出训练 → ④ lm-eval 生态接入（需 auto_map/PreTrainedModel 化）→ ⑤ 1.5B 规划。
+- 云端启动：Colab 用 `notebooks/TAIS_1B_Colab.ipynb`；普通新机用 `scripts/cloud/README.md`。
 
 ## 1. 本次会话关键产出与数据（新机继续的依赖）
 
@@ -79,14 +85,17 @@
 
 ## 3. 新机任务队列（详细）
 
-### 任务 ① 0.5B 预训练（最高优先）
+### 任务 ① 1B 预训练+中训练（最高优先，Colab 执行）
+**已被 2026-07-31 的 1B/Colab 计划取代 0.5B 本地路线**（0.5B 配置/数据/双卡 DP 全部保留可复用）：
+执行载体 `notebooks/TAIS_1B_Colab.ipynb` + `docs/Colab_1B训练计划.md`。要点：G4 RTX PRO 6000（96GB sm_120，torch 必须 cu128）；10B tokens（shards_1b，prepare_data_1b.py 流式制备 3-5h）；预训练 34300 步 Stable（decay_frac=0）→ 中训练 3800 步 decay_frac=1.0（--init_from 独立退火 run，退火混合 math 40%/code 20%）；checkpoint 每 500 步 + 15 min Drive 同步（断连一等公民）；训完 export_final → 模型卡 → upload_folder 上传 HF（library_name 显式声明自研格式）。**10B 对 1B 是研究性欠训（Chinchilla 20B/当代 4T+），模型卡已如实标注**。
+<details><summary>（存档）0.5B 本地训练命令</summary>
+
 ```bash
-# 单卡（推荐起步；>24GB 显存可调大 micro_batch，但注意 micro 32 在 24GB 上反而降速，需重新标定）
+# 单卡（>24GB 显存可调大 micro_batch，但注意 micro 32 在 24GB 上反而降速，需重新标定）
 python -u -m tais_obsidian.train --config configs/pilot_0p5b_gdn2.json > logs_train_0p5b.txt 2>&1
-# 多卡：scripts/train_dp.py 目前写死双卡（master/worker 双实例）；>2 卡需改脚本（或改用 torchrun NCCL——Linux 新机可用）
 ```
-- 验收：loss 从 ~10.6 正常下降、gnorm <20 收敛、val_every 500 出 val loss；22900 步 ≈ 3B tokens（吞吐按新卡标定后估算 ETA 并记录）。
-- 若新机显存 ≥48GB：micro 32/48 重标定（记录 tok/s 与峰值），吞吐应显著优于 2.4k。
+- 验收：loss 从 ~10.6 正常下降、gnorm <20 收敛；22900 步 ≈ 3B tokens。
+</details>
 
 ### 任务 ② RoPE 扩容+NTK → 256K（**已部分落地**，继续推进）
 - 根因：`src/tais_obsidian/model/tri_attention.py` 的 `rope_cos/rope_sin` 缓冲按 `cfg.max_seq`（1024）构建，`_rope(k,0)` 全量重算 → >1024 越界。`rope_theta=10000`（config.py:28）。

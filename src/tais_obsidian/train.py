@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -21,7 +22,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+# ipykernel OutStream 无 reconfigure 方法（notebook import 即炸），hasattr 守卫
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from tais_obsidian.config import ModelConfig
 from tais_obsidian.data.memmap import Shards
@@ -217,6 +220,45 @@ def save_checkpoint(path: Path, model, opt, step: int, cfg: dict, rng: np.random
     )
 
 
+def copy_tokenizer_to_final(final_dir: str | Path) -> None:
+    """把 data/tokenizer/tokenizer.json 复制进 final 目录（随权重产物，下载即可推理）。
+
+    路径相对仓库根（train.py 上两级）；tokenizer 不存在时只警告不炸（训练产物不受影响）。
+    """
+    src = Path(__file__).resolve().parents[2] / "data" / "tokenizer" / "tokenizer.json"
+    dst = Path(final_dir) / "tokenizer.json"
+    if not src.exists():
+        print(f"[warn] tokenizer 不存在：{src}，final 目录未携带（generate 需显式 --tokenizer 或回退仓库内默认）")
+        return
+    shutil.copy(src, dst)
+    print(f"[tokenizer] 已随权重产物复制：{src} → {dst}")
+
+
+# resume 时校验的 model_cfg 关键字段（结构/词表/上下文语义错配即拒绝续训）
+RESUME_CRITICAL_FIELDS = (
+    "vocab_size", "d_model", "n_layer",
+    "n_q_heads", "n_kv_heads", "head_dim", "n_v_heads", "n_qk_heads",
+    "mlp_hidden", "max_seq", "rope_scaling", "rope_scale", "gdn_decay_g_min",
+)
+
+
+def validate_resume_model_cfg(ckpt_model_cfg: dict | None, cur: ModelConfig) -> None:
+    """resume 时校验 checkpoint 的 model_cfg 与当前 config 关键字段一致。
+
+    结构不一致续训轻则静默错训、重则 state_dict 形状崩溃；不一致即报错退出并打印
+    差异字段表。极旧 checkpoint 无 model_cfg 字段时降级为警告（不阻塞）。
+    """
+    if not ckpt_model_cfg:
+        print("[resume] 警告：checkpoint 无 model_cfg 字段（极旧格式），跳过结构一致性校验")
+        return
+    diffs = [(k, ckpt_model_cfg.get(k, "<缺失>"), getattr(cur, k))
+             for k in RESUME_CRITICAL_FIELDS
+             if ckpt_model_cfg.get(k, "<缺失>") != getattr(cur, k)]
+    if diffs:
+        table = "\n".join(f"  {k}: ckpt={old!r} ≠ 当前={new!r}" for k, old, new in diffs)
+        raise SystemExit(f"[resume] model_cfg 关键字段不一致，拒绝续训：\n{table}")
+
+
 def build_model_config(cfg: dict) -> ModelConfig:
     """从训练 cfg 字典构建 ModelConfig（train.main 与 scripts/train_dp.py 共用）。
 
@@ -260,6 +302,16 @@ def build_model_config(cfg: dict) -> ModelConfig:
         gdn_decay_g_min=cfg.get("gdn_decay_g_min", -5.0),
         kernel_enabled=cfg.get("kal_aux_weight", 0.0) > 0.0,
         kernel_sense_layers=cfg.get("kal_sense_layers") or [],
+        # 以下字段此前不透传（config JSON 显式写也被静默忽略），2026-07-31 补齐；
+        # 缺省一律回退 ModelConfig 默认值，既有 config JSON 行为零变化。
+        pm_sk_t_max=cfg.get("pm_sk_t_max", 20),
+        grad_checkpoint=cfg.get("grad_checkpoint", True),
+        rope_theta=cfg.get("rope_theta", 10000.0),
+        rms_eps=cfg.get("rms_eps", 1e-6),
+        conv_kernel=cfg.get("conv_kernel", 4),
+        kernel_dg_dim=cfg.get("kernel_dg_dim", 256),
+        kernel_dg_topk=cfg.get("kernel_dg_topk", 32),
+        manifold_dim=cfg.get("manifold_dim", 64),
     )
 
 
@@ -272,10 +324,13 @@ def main() -> None:
     ap.add_argument("--grad_accum", type=int, default=None, help="临时覆盖 grad_accum（配合 micro_batch 保持全局 batch）")
     ap.add_argument("--run_name", default=None)
     ap.add_argument("--out_dir", default=None)
+    ap.add_argument("--data_dir", default=None, help="临时覆盖数据目录（中训练换数据用，与 --max_steps 同模式）")
+    ap.add_argument("--init_from", default=None,
+                    help="save_pretrained 目录：仅载权重（step=0、全新优化器），中训练/退火阶段初始化用；与 --resume 互斥")
     args = ap.parse_args()
     cfg = dict(DEFAULTS)
     cfg.update(json.loads(Path(args.config).read_text(encoding="utf-8")))
-    for key in ("max_steps", "micro_batch", "grad_accum", "run_name", "out_dir"):
+    for key in ("max_steps", "micro_batch", "grad_accum", "run_name", "out_dir", "data_dir"):
         if getattr(args, key) is not None:
             cfg[key] = getattr(args, key)
     print(f"[cfg] {json.dumps(cfg, ensure_ascii=False)}")
@@ -311,15 +366,36 @@ def main() -> None:
     start_step = 0
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
+        # 结构一致性校验：model_cfg 关键字段与当前 config 不符即报错退出（防错配静默续训）
+        validate_resume_model_cfg(ckpt.get("model_cfg"), model_cfg)
         model.load_state_dict(ckpt["model"])
         opt.load_state_dict(ckpt["opt"])
         start_step = ckpt["step"]
-        torch.set_rng_state(ckpt["rng"]["torch"])
+        # map_location=device 会把 CPU RNG ByteTensor 也映射上 GPU，set_rng_state 只收 CPU 张量
+        torch.set_rng_state(ckpt["rng"]["torch"].cpu())
         if ckpt["rng"]["cuda"] is not None:
-            torch.cuda.set_rng_state_all(ckpt["rng"]["cuda"])
+            try:
+                # 双卡 checkpoint 单卡 resume：状态列表切片到本机可见设备数；
+                # map_location=device 会把 CPU ByteTensor 映射上 GPU（isinstance 校验失败），逐个搬回 CPU；
+                # 越界/损坏等异常降级为警告（按当前种子继续，不阻塞续训）
+                torch.cuda.set_rng_state_all(
+                    [s.cpu() for s in ckpt["rng"]["cuda"][: torch.cuda.device_count()]]
+                )
+            except Exception as e:
+                print(f"[resume] 警告：CUDA RNG 状态恢复失败（{e}），按当前种子继续")
         rng = np.random.default_rng()
         rng.bit_generator.state = ckpt["rng"]["numpy"]
         print(f"[resume] 从 {args.resume} 恢复，step={start_step}")
+
+    if args.init_from:
+        # 中训练/退火初始化：仅载 save_pretrained 权重，step=0、全新优化器（OLMo Dolmino
+        # 式独立退火 run 惯例——WSD 调度从本阶段 step 0 重新计，与 --resume 互斥）。
+        if args.resume:
+            raise SystemExit("[init_from] 与 --resume 互斥：中训练用 --init_from，断点续训用 --resume")
+        src_model = TaisObsidianForCausalLM.from_pretrained(args.init_from, device="cpu")
+        model.load_state_dict(src_model.state_dict(), strict=True)
+        del src_model
+        print(f"[init_from] 从 {args.init_from} 载入权重（step=0，全新优化器）")
 
     # micro_batch OOM 自动降级：16 → 8，grad_accum 翻倍保持 global batch
     oom_checked = False
@@ -330,75 +406,80 @@ def main() -> None:
 
     ema_loss = None
     t_log = time.time()
-    while step < cfg["max_steps"]:
-        lr = lr_at(step, cfg)
-        set_lr(opt, lr, cfg)
-        opt.zero_grad(set_to_none=True)
-        loss_accum = 0.0
-        try:
-            for _ in range(cfg["grad_accum"]):
-                x, y = train_shards.get_batch(cfg["micro_batch"], cfg["seq_len"], device, rng)
-                with torch.autocast("cuda", torch.bfloat16):
-                    logits, _ = model(x)
-                    loss = chunked_ce(logits, y)
-                    # KAL 内生辅助损失（T1 预训练后期；默认关）。
-                    # 注意：kal_pik_aux_loss 内部对主干 hidden detach，探针梯度只进 KAL 头
-                    # （监测/执行分置红线）；主干 CE 仍走完整计算图。
-                    if cfg.get("kal_aux_weight", 0.0) > 0.0:
-                        sense_layers = model.kernel_sense_index()
-                        aux = kal_pik_aux_loss(model, x, y, sense_layers)
-                        if aux is not None:
-                            loss = loss + cfg["kal_aux_weight"] * aux
-                (loss / cfg["grad_accum"]).backward()
-                loss_accum += loss.item() / cfg["grad_accum"]
-        except (torch.cuda.OutOfMemoryError, torch.AcceleratorError) as e:
-            if "out of memory" not in str(e).lower():
+    # try/finally：训练中途崩溃（OOM 不可恢复、键盘中断等）也尽量 writer.close() flush 已写标量
+    try:
+        while step < cfg["max_steps"]:
+            lr = lr_at(step, cfg)
+            set_lr(opt, lr, cfg)
+            opt.zero_grad(set_to_none=True)
+            loss_accum = 0.0
+            try:
+                for _ in range(cfg["grad_accum"]):
+                    x, y = train_shards.get_batch(cfg["micro_batch"], cfg["seq_len"], device, rng)
+                    with torch.autocast("cuda", torch.bfloat16):
+                        logits, _ = model(x)
+                        loss = chunked_ce(logits, y)
+                        # KAL 内生辅助损失（T1 预训练后期；默认关）。
+                        # 注意：kal_pik_aux_loss 内部对主干 hidden detach，探针梯度只进 KAL 头
+                        # （监测/执行分置红线）；主干 CE 仍走完整计算图。
+                        if cfg.get("kal_aux_weight", 0.0) > 0.0:
+                            sense_layers = model.kernel_sense_index()
+                            aux = kal_pik_aux_loss(model, x, y, sense_layers)
+                            if aux is not None:
+                                loss = loss + cfg["kal_aux_weight"] * aux
+                    (loss / cfg["grad_accum"]).backward()
+                    loss_accum += loss.item() / cfg["grad_accum"]
+            except (torch.cuda.OutOfMemoryError, torch.AcceleratorError) as e:
+                if "out of memory" not in str(e).lower():
+                    raise
+                if not oom_checked and cfg["micro_batch"] > 1:
+                    cfg["micro_batch"] //= 2
+                    cfg["grad_accum"] *= 2
+                    oom_checked = True
+                    tokens_per_step = cfg["micro_batch"] * cfg["grad_accum"] * cfg["seq_len"]
+                    try:
+                        torch.cuda.empty_cache()
+                    except torch.AcceleratorError:
+                        # CUDA 上下文已被 OOM 污染（kernel 内 OOM 不可恢复），只能重启进程
+                        raise RuntimeError(
+                            "CUDA OOM 发生在 kernel 内，上下文不可恢复；请以更小 micro_batch 重启"
+                        ) from e
+                    # 不重建优化器：micro/accum 只影响 batch 切分，与优化器状态（动量/二阶矩）
+                    # 无关；此前 build_optimizer 重建会静默丢失全部一阶/二阶矩（训练质量跳变）。
+                    print(f"[oom] micro_batch 降至 {cfg['micro_batch']}，grad_accum 升至 {cfg['grad_accum']}，重试本步")
+                    continue
                 raise
-            if not oom_checked and cfg["micro_batch"] > 8:
-                cfg["micro_batch"] //= 2
-                cfg["grad_accum"] *= 2
-                oom_checked = True
-                tokens_per_step = cfg["micro_batch"] * cfg["grad_accum"] * cfg["seq_len"]
-                try:
-                    torch.cuda.empty_cache()
-                except torch.AcceleratorError:
-                    # CUDA 上下文已被 OOM 污染（kernel 内 OOM 不可恢复），只能重启进程
-                    raise RuntimeError(
-                        "CUDA OOM 发生在 kernel 内，上下文不可恢复；请以更小 micro_batch 重启"
-                    ) from e
-                opt = build_optimizer(model, cfg)
-                print(f"[oom] micro_batch 降至 {cfg['micro_batch']}，grad_accum 升至 {cfg['grad_accum']}，重试本步")
-                continue
-            raise
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg["grad_clip"])
-        opt.step()
-        step += 1
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg["grad_clip"])
+            opt.step()
+            step += 1
 
-        ema_loss = loss_accum if ema_loss is None else 0.98 * ema_loss + 0.02 * loss_accum
-        if step % cfg["log_every"] == 0 or step == 1:
-            dt = time.time() - t_log
-            n_tok = tokens_per_step * (cfg["log_every"] if step > 1 else 1)
-            tok_s = n_tok / dt if step > 1 else tokens_per_step / dt
-            mem = torch.cuda.max_memory_allocated() / 1024**3
-            print(f"step {step:5d} | loss {loss_accum:.4f} (ema {ema_loss:.4f}) | lr {lr:.2e} | "
-                  f"gnorm {grad_norm.item():.2f} | {tok_s/1e3:.1f}k tok/s | mem {mem:.2f}GB")
-            writer.add_scalar("train/loss", loss_accum, step)
-            writer.add_scalar("train/lr", lr, step)
-            writer.add_scalar("train/grad_norm", grad_norm.item(), step)
-            writer.add_scalar("train/tok_per_s", tok_s, step)
-            t_log = time.time()
-        if step % cfg["val_every"] == 0 or step == cfg["max_steps"]:
-            vl = eval_val(model, val_shards, cfg, device, rng)
-            print(f"step {step:5d} | val loss {vl:.4f}")
-            writer.add_scalar("val/loss", vl, step)
-        if step % cfg["ckpt_every"] == 0 or step == cfg["max_steps"]:
-            save_checkpoint(out_dir / "latest.pt", model, opt, step, cfg, rng)
-            print(f"[ckpt] step {step} → {out_dir/'latest.pt'}")
+            ema_loss = loss_accum if ema_loss is None else 0.98 * ema_loss + 0.02 * loss_accum
+            if step % cfg["log_every"] == 0 or step == 1:
+                dt = time.time() - t_log
+                n_tok = tokens_per_step * (cfg["log_every"] if step > 1 else 1)
+                tok_s = n_tok / dt if step > 1 else tokens_per_step / dt
+                mem = torch.cuda.max_memory_allocated() / 1024**3
+                print(f"step {step:5d} | loss {loss_accum:.4f} (ema {ema_loss:.4f}) | lr {lr:.2e} | "
+                      f"gnorm {grad_norm.item():.2f} | {tok_s/1e3:.1f}k tok/s | mem {mem:.2f}GB")
+                writer.add_scalar("train/loss", loss_accum, step)
+                writer.add_scalar("train/lr", lr, step)
+                writer.add_scalar("train/grad_norm", grad_norm.item(), step)
+                writer.add_scalar("train/tok_per_s", tok_s, step)
+                t_log = time.time()
+            if step % cfg["val_every"] == 0 or step == cfg["max_steps"]:
+                vl = eval_val(model, val_shards, cfg, device, rng)
+                print(f"step {step:5d} | val loss {vl:.4f}")
+                writer.add_scalar("val/loss", vl, step)
+            if step % cfg["ckpt_every"] == 0 or step == cfg["max_steps"]:
+                save_checkpoint(out_dir / "latest.pt", model, opt, step, cfg, rng)
+                print(f"[ckpt] step {step} → {out_dir/'latest.pt'}")
 
-    # 结束：另存 final bf16 save_pretrained
-    model.save_pretrained(out_dir / "final")
-    print(f"[done] final 模型（bf16）→ {out_dir/'final'}")
-    writer.close()
+        # 结束：另存 final bf16 save_pretrained + 复制 tokenizer（随权重产物，下载即可推理）
+        model.save_pretrained(out_dir / "final")
+        copy_tokenizer_to_final(out_dir / "final")
+        print(f"[done] final 模型（bf16）→ {out_dir/'final'}")
+    finally:
+        writer.close()
 
 
 if __name__ == "__main__":

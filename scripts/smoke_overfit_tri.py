@@ -13,7 +13,8 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stdout, "reconfigure"):  # ipykernel OutStream 无此方法（notebook import 兼容）
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from tais_obsidian.config import ModelConfig
 from tais_obsidian.data.memmap import Shards
@@ -38,8 +39,8 @@ def tiny_cfg() -> ModelConfig:
         n_qk_heads=2,
         mlp_hidden=688,
         max_seq=SEQ,
-        attn_impl="tri",
-        # SEQ=512 下压实三分支：滑窗 128、CSA stride-4 top-32（128 条压 32）、HCA 64:1（8 条）
+        # 注意力层已统一为三级栈（2026-07 移除 attn_impl 字段），此处仅压实三分支参数：
+        # SEQ=512 下滑窗 128、CSA stride-4 top-32（128 条压 32）、HCA 64:1（8 条）
         tri_window=128,
         tri_csa_stride=4,
         tri_csa_topk=32,

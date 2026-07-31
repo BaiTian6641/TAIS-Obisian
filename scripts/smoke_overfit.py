@@ -1,6 +1,7 @@
 """冒烟测试：tiny 配置过拟合同一个真实 batch，验证前向/反向/优化器/AMP 全链路。
 
-hybrid(GGGA) 与 attn_only(AAAA) 两个变体各训 300 步，断言 final loss（末 10 步均值）< 0.1。
+hybrid(G2G2G2A) 与 all_attn(AAAA 全三级栈) 两个变体各训 300 步，断言 final loss（末 10 步均值）< 0.1。
+（2026-07 起 attn_only 对照组废弃：注意力层统一为三级栈，AAAA 变体经 block_pattern 表达。）
 用法：python scripts/smoke_overfit.py
 """
 from __future__ import annotations
@@ -13,7 +14,8 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stdout, "reconfigure"):  # ipykernel OutStream 无此方法（notebook import 兼容）
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from tais_obsidian.config import ModelConfig
 from tais_obsidian.data.memmap import Shards
@@ -27,7 +29,7 @@ LR = 3e-3
 WARMUP = 20
 
 
-def tiny_cfg(attn_only: bool) -> ModelConfig:
+def tiny_cfg(all_attn: bool) -> ModelConfig:
     return ModelConfig(
         d_model=256,
         n_layer=4,
@@ -38,16 +40,16 @@ def tiny_cfg(attn_only: bool) -> ModelConfig:
         n_qk_heads=2,
         mlp_hidden=688,
         max_seq=SEQ,
-        attn_only=attn_only,
+        block_pattern=["A", "A", "A", "A"] if all_attn else ["G2", "G2", "G2", "A"],
         check_0p1b_params=False,
     )
 
 
-def run_variant(attn_only: bool, x: torch.Tensor, y: torch.Tensor, device: str) -> float:
-    tag = "attn_only" if attn_only else "hybrid"
+def run_variant(all_attn: bool, x: torch.Tensor, y: torch.Tensor, device: str) -> float:
+    tag = "all_attn" if all_attn else "hybrid"
     torch.manual_seed(42)
     torch.cuda.manual_seed_all(42)
-    model = TaisObsidianForCausalLM(tiny_cfg(attn_only)).to(device)
+    model = TaisObsidianForCausalLM(tiny_cfg(all_attn)).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=LR, betas=(0.9, 0.95), eps=1e-8, weight_decay=0.0)
     tail: list[float] = []
     t0 = time.time()
@@ -82,8 +84,8 @@ def main() -> None:
     x, y = shards.get_batch(BATCH, SEQ, device, rng)
     print(f"[data] 固定真实 batch: {x.shape}，来自 train shards")
     losses = {}
-    for attn_only in (False, True):
-        losses["attn_only" if attn_only else "hybrid"] = run_variant(attn_only, x, y, device)
+    for all_attn in (False, True):
+        losses["all_attn" if all_attn else "hybrid"] = run_variant(all_attn, x, y, device)
     print(f"[smoke] 两变体均通过: {losses}")
 
 

@@ -53,7 +53,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stdout, "reconfigure"):  # ipykernel OutStream 无此方法（notebook import 兼容）
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 # 允许从仓库根目录直接 `python scripts/train_dp.py` 运行（src 布局包装进 sys.path）
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 

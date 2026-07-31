@@ -29,7 +29,8 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stdout, "reconfigure"):  # ipykernel OutStream 无此方法（notebook import 兼容）
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from diverse_truth_data import make_fake_word  # noqa: E402  虚构专名（音节拼接，先验不存在）
 

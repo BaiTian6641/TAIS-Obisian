@@ -55,7 +55,8 @@ import torch.nn as nn
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stdout, "reconfigure"):  # ipykernel OutStream 无此方法（notebook import 兼容）
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from tais_obsidian.data.memmap import Shards  # noqa: E402
 from tais_obsidian.model.kal import KALHead, read_point  # noqa: E402

@@ -28,8 +28,10 @@ checkpoint 出发，按阶段（如 4K→16K→64K→256K）逐段微调解除�
 
 阶段语法：--stages "seq_len:steps[:lr], ..."（lr 缺省用 --lr）。每段 seq_len×步数×lr 独立，
 WSD（warmup 10% + 末段 decay 20%）复用 train.py 的 lr_at/set_lr（不改其语义）。
-每段末存 out_dir/latest.pt；全部完成后 save_pretrained → out_dir/final（config.json 携带
-新 max_seq/rope_* 字段，from_pretrained 直接可加载）。
+每段末存 out_dir/latest.pt（含 stage_index，供断点定位）；全部完成后 save_pretrained → out_dir/final
+（config.json 携带新 max_seq/rope_* 字段，from_pretrained 直接可加载）。
+断点续训：加 --resume out_dir/latest.pt ——与 train.py 同语义（恢复权重/优化器/RNG/阶段内步数，
+跳过已完成阶段；RoPE 缓存不进 state_dict，首个执行阶段自动完整重建）。
 
 显存自适应：micro_batch 超 --token_budget（默认 16K tokens，=1024×16 基线）时自动降 micro
 （micro = max(1, min(micro_batch, token_budget//seq_len))），grad_accum 按 --global_tokens
@@ -57,7 +59,8 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stdout, "reconfigure"):  # ipykernel OutStream 无此方法（notebook import 兼容）
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from tais_obsidian.data.memmap import Shards  # noqa: E402
 from tais_obsidian.model.model import TaisObsidianForCausalLM  # noqa: E402
@@ -112,6 +115,9 @@ def main() -> None:
     ap.add_argument("--log_every", type=int, default=5)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument("--resume", default=None,
+                    help="out_dir/latest.pt 断点续训（与 train.py 同语义：恢复权重/优化器/RNG/"
+                         "阶段索引与阶段内步数，跳过已完成阶段）")
     args = ap.parse_args()
 
     stages = parse_stages(args.stages, args.lr)
@@ -136,6 +142,32 @@ def main() -> None:
         "weight_decay": args.weight_decay,
     }
     opt = build_optimizer(model, opt_cfg)
+
+    # 断点续训（与 train.py 同语义）：恢复权重/优化器/RNG + 阶段索引与阶段内步数。
+    # RoPE 缓存 persistent=False 不进 state_dict，首个执行阶段仍走完整 extend_context 重建。
+    resume_stage, resume_step = 0, 0
+    if args.resume:
+        ckpt = torch.load(args.resume, map_location=args.device, weights_only=False)
+        model.load_state_dict(ckpt["model"])
+        opt.load_state_dict(ckpt["opt"])
+        resume_step = ckpt["step"]
+        resume_stage = ckpt["train_cfg"].get("stage_index", 0)
+        # map_location=args.device 会把 CPU RNG ByteTensor 也映射上 GPU，set_rng_state 只收 CPU 张量
+        torch.set_rng_state(ckpt["rng"]["torch"].cpu())
+        if ckpt["rng"]["cuda"] is not None and args.device == "cuda":
+            try:
+                # 双卡 checkpoint 单卡 resume：切片到本机可见设备数；
+                # map_location 会把 CPU ByteTensor 映射上 GPU（isinstance 校验失败），逐个搬回 CPU；
+                # 异常降级为警告
+                torch.cuda.set_rng_state_all(
+                    [s.cpu() for s in ckpt["rng"]["cuda"][: torch.cuda.device_count()]]
+                )
+            except Exception as e:
+                print(f"[resume] 警告：CUDA RNG 状态恢复失败（{e}），按当前种子继续")
+        rng = np.random.default_rng()
+        rng.bit_generator.state = ckpt["rng"]["numpy"]
+        print(f"[resume] 从 {args.resume} 恢复：阶段 {resume_stage} 步 {resume_step}")
+
     train_shards = Shards(args.data_dir, "train")
     val_shards = Shards(args.data_dir, "val")
     out_dir = Path(args.out_dir)
@@ -143,15 +175,20 @@ def main() -> None:
 
     report: dict = {"ckpt": args.ckpt, "original_max_seq": original_max,
                     "rope_scaling": args.rope_scaling, "stages": []}
+    rope_extended = False  # 首个执行的阶段做完整 extend_context（fresh 的 si=0 或 resume 首个未跳阶段）
     for si, st in enumerate(stages):
+        if si < resume_stage:
+            print(f"[resume] 跳过已完成阶段 {si}（seq={st['seq_len']} steps={st['steps']}）")
+            continue
         seq, steps, lr_peak = st["seq_len"], st["steps"], st["lr"]
         # 扩窗：max_seq 一次到顶（缓存行数按最终阶段构建，避免每段重分配大缓冲）；
         # YaRN scale 按本阶段窗口/原始窗口逐段调整（训练内 YaRN 课程口径），重建仅 fp32
         # 拷贝 67MB/层 级成本，ms 级完成。
         scale = max(1.0, seq / original_max) if args.rope_scaling == "yarn" else 1.0
-        if si == 0:
+        if not rope_extended:
             model.extend_context(max_seq=max_stage, rope_scaling=args.rope_scaling,
                                  rope_scale=scale, rope_original_max_seq=original_max)
+            rope_extended = True
         else:
             model.config.rope_scale = scale
             for layer in model.layers:
@@ -160,9 +197,11 @@ def main() -> None:
         # micro/accum 自适应：token_budget 内降 micro，global_tokens 配平 accum
         micro = max(1, min(args.micro_batch, args.token_budget // seq))
         accum = args.grad_accum or max(1, round(args.global_tokens / (micro * seq)))
-        # 阶段级 WSD：warmup 10%（≥2 步）→ 恒定 → 末 20% 线性降 0（复用 train.lr_at）
+        # 阶段级 WSD：warmup 10%（≥2 步）→ 恒定 → 末 20% 线性降 0（复用 train.lr_at）；
+        # stage_index 入 cfg 供断点定位（lr_at 只读 warmup/max_steps/decay_frac/lr，多余键无害）
         stage_cfg = {"lr": lr_peak, "muon_lr": args.muon_lr,
-                     "warmup": max(2, steps // 10), "max_steps": steps, "decay_frac": 0.2}
+                     "warmup": max(2, steps // 10), "max_steps": steps, "decay_frac": 0.2,
+                     "stage_index": si}
         tokens_per_step = micro * accum * seq
         print(f"[stage {si}] seq={seq} steps={steps} lr={lr_peak:.1e} scale={scale:.1f} "
               f"micro={micro}×accum={accum} = {tokens_per_step/1024:.0f}k tok/step")
@@ -171,7 +210,11 @@ def main() -> None:
         t0 = time.time()
         n_tok = 0
         oom_halved = False
-        step = 0
+        step = resume_step if si == resume_stage else 0
+        if step >= steps:
+            # 阶段末保存后中断的场景：该阶段已训完，直接进入下一阶段
+            print(f"[resume] 阶段 {si} 已训完（step={step}>={steps}），进入下一阶段")
+            continue
         while step < steps:
             lr = lr_at(step, stage_cfg)
             set_lr(opt, lr, opt_cfg | {"lr": lr_peak})

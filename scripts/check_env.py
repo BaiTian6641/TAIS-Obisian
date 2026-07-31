@@ -9,7 +9,8 @@ import sys
 import torch
 
 # Windows 控制台默认 GBK，避免中文输出乱码
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stdout, "reconfigure"):  # ipykernel OutStream 无此方法（notebook import 兼容）
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 failures = []
 

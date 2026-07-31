@@ -142,6 +142,11 @@ class TaisObsidianForCausalLM(nn.Module):
         self.kernel = TAISKernel(cfg.d_model, dg_dim=cfg.kernel_dg_dim, dg_topk=cfg.kernel_dg_topk)
         p = self.embed.weight
         self.kernel = self.kernel.to(device=p.device, dtype=p.dtype)
+        # 同步配置标志（幂等）：内核已挂载则 kernel_enabled 必须为 True——否则
+        # save_pretrained 存入 kernel.* 权重而 config.json 记 kernel_enabled=False，
+        # from_pretrained 不建内核 → strict 载入因多余 kernel.* 键崩溃
+        # （test_kal_gdn2_truth.py:49-53 记录过的坑）。
+        self.config.kernel_enabled = True
 
     def extend_context(
         self,
