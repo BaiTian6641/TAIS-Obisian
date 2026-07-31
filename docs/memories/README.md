@@ -24,6 +24,7 @@
 | `hardware-dual-gpu.md` | 双卡硬件（PRO 4000 + 4070）分工 |
 | `0p5b-training-dual-gpu-dp.md` | **0.5B 训练+双卡 DP+3B 数据集**（512.8M 配置/重叠 DP 3.1k tok/s +24%/Muon×WSD 修复/训练进行中）|
 | `colab-1b-training-plan.md` | **Colab 1B 训练转向（当前主线）**（1017.7M 配置/10B 数据脚本/审阅修复 437 绿/notebook 28 cells）|
+| `interactive-validation.md` | **交互式全链验证**（REPL+四阶段剧本；CA1 信源可信度边缘效应新发现）|
 | `training-efficiency.md` | 训练吞吐与显存效率 |
 
 ### 2. 门控副作用根治（fb1 P0，最终方向：记忆层）
