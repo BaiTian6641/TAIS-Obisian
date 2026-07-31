@@ -83,6 +83,26 @@ TAIS Obsidian（图 1）围绕一个思想构建：知识应当是与权重同�
 
 *图 6-1：交互式四阶段验证面板（真实运行产物 `runs/interactive_validation/`）：A 空白区 certainty / B 教学即时召回 / C 推理 certainty 轨迹 / D CA1 门裁决。*
 
+**扩展验证：流形训练、CA1 自适应与五场景协同（2026-07-31 再补）。** 在交互验证基础上，本轮完成三件系统性工作并执行五场景扩展测试（113 轮完整对话日志，判据 14/15 通过、1 项诚实负结果）。
+
+*① 流形思考确认需要训练（并已训练）。* 证据显示统一 checkpoint 不含流形投影器权重（266 键中零 manifold 键；权重统计与随机初始化完全一致）。以冻结主干（训练前后逐位一致）训练投影器 1500 步后（图 6-2）：语义聚簇对比度 1.558 → **1.989**，等距 Pearson 0.882 → **0.977**；最直观的证据是——数学 prompt 推理轨迹在流形空间中最近的 4 个知识块恰为全部 4 个数学块。同时实现了流形推理预览（逐生成步 3D 轨迹 + 知识块叠加渲染 + 坏路径四类检测）。
+
+![流形投影器训练对照](assets/chart_manifold_training.png)
+
+*② CA1 巩固门自适应（v1.0 → v1.1，根治上述边缘效应）。* 三项机制：边缘带 RE_VERIFY（consensus∈[0.62, 0.7) 的块不直接拒绝，经交叉验证复核并有界加成后二次入门，上限 1 次）；证据感知共识（0.85·基础分 + 0.10·usage + 0.05·验证通过率）；信源可信度在线学习（EMA，历史验证结果回写信源先验）。实证（图 6-3）：doc 源块 0.688 → RE_VERIFY → 0.743 → **PROMOTE（6/6 固化，v1.0 仅 3/6）**；矛盾块仍 QUARANTINE。抗"放水"经三重验证：劣质块（<0.62）直接拒绝不进带、复核恒败不累积洗白、连续失败使信源跌出边缘带（0.70→0.36）失去重试资格。
+
+![CA1 自适应裁决对比](assets/chart_ca1_adaptive.png)
+
+*③ 五场景协同测试。* S1 已有知识链检索命中 0.67/1.00（0.1B 世界知识弱，如实记录）；S2 多轮教学召回曲线单调不降，重教条目 v1/v2/v3 版本共存（累积不覆盖红线成立）；**S3 桥接（核心成果）**：默认权重推不出 D（certainty=0.000），只补教中间知识 B'、C' 后注入召回答出 D（'krypton'），且推理轨迹在流形空间对新教块的最近距离从 6.12 改善到 5.54（图 6-4）；S5 睡眠固化 19 个 doc 源块全部经 RE_VERIFY 固化，信源可信度 doc 0.70→0.95，固化后召回不变（固化不破坏运行时能力）。
+
+![S3 桥接邻近性](assets/chart_s3_bridge.png)
+
+**载体分布边界（本轮最重要的诚实发现）。** S4 动态词表场景中，新词"Xylon"的 concept_slot 注册成功、语义邻居正确（metal/silver 类 cos 均值 0.256 > 无关词 0.168，图 6-5）、检索 top-1 命中——但**注入召回完全失败**（5 种句式变体全部回退先验答案）。进一步排查确认：KV 注入召回仅在 teaching SFT 训练分布（引擎事实句式 + 燃料词答案域）内有效，自定义句式的事实检索/召回仅 0.25。即 0.1B 的"写入即可用"是**分布内能力**而非通用能力。
+
+![S4 概念槽语义邻居](assets/chart_s4_neighbors.png)
+
+**解决方案分析（结合文献交叉验证）。** 这一边界与知识编辑领域的已知难题同构——编辑后的事实难以稳健泛化与逻辑推理 [27]。三条互相补强的路径：① **召回训练分布多样化**——WISE 等研究表明 few-shot 微调比纯 in-context 更具分布外泛化性、而检索与微调结合最优 [27]：teaching SFT 的句式模板与答案词域需要多样化（已列入 1B 数据配方）；② **检索鲁棒性**——对 HRL indexer 引入硬负例训练（STAR/ADORE 式，先易后难的负例课程 [28]），解决非训练分布问句 top-1 被干扰块抢走的问题；③ **OOV 概念升格**——概念槽向量目前只能 steer 不能事实召回（位置不变载体的理论边界），需配合输出侧注册（embedding 初始化改进 [29] + 仅训 W_E/W_U 的短程 CPT，对齐设计文档三级阶梯）。上述三项均列入 1B 复测清单（与 KAL 探针强度并列首要观测）。
+
 ## 设计历程：发现的问题与解决方式
 
 工程诚实是本项目的设计原则，若干发现改变了架构的走向。
@@ -162,3 +182,9 @@ pilot 阶段已完成，项目已过渡到 1B 模型（实测 1,017.7M 参数：
 [25] "Meta-R1: Metacognitive reinforcement learning for large language models," arXiv:2508.17291, 2025.
 
 [26] "MemoryGraft: Temporally-decoupled indirect memory injection attacks on LLM agents," arXiv:2512.16962, 2025.
+
+[27] "WISE: Rethinking the knowledge memory for lifelong model editing of large language models," arXiv:2405.14768, 2024.
+
+[28] J. Zhan, J. Mao, Y. Liu, J. Guo, M. Zhang, and S. Ma, "Optimizing dense retrieval model training with hard negatives," in *Proc. SIGIR*, 2021, arXiv:2104.08051.
+
+[29] J. Hewitt, "Initializing new word embeddings for pretrained language models," Columbia University, 2021. [Online]. Available: https://www.cs.columbia.edu/~johnhew//vocab-expansion.html

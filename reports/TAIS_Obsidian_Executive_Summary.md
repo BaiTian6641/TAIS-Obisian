@@ -42,15 +42,31 @@ TAIS Obsidian (Figure 1) is built around one idea: knowledge should be a runtime
 
 ## Current Progress: What Has Been Validated at 0.1B
 
-Every subsystem above has been implemented in a self-built pure-PyTorch framework and measured on a 0.1B pilot (12 layers, d_model 768, 120M training tokens), on a dual-GPU workstation. All numbers below come from project evaluation artifacts; the full suite of 437 unit tests passes.
+Every subsystem above has been implemented in a self-built pure-PyTorch framework and measured on a 0.1B pilot (12 layers, d_model 768, 120M training tokens), on a dual-GPU workstation. All numbers below come from project evaluation artifacts; the full suite of 471 unit tests passes.
 
 **Backbone and efficiency ablations.** The hybrid baseline reaches validation loss 3.768. The three-level retrieval stack scores 3.762 (−0.006 nats, +0.093% parameters), and the PM-stream multi-stream residual scores 3.744 (−0.024); the combination is compatible at 3.743 (−0.025) [14], [18].
+
+![Training curve](assets/en/chart_training_curve.png)
+
+*Fig. 1: 0.1B GDN-2 pre-training convergence, 10k steps (real training log).*
+
+![Ablation](assets/en/chart_ablation.png)
+
+*Fig. 2: Native-component ablation (2000-step val loss).*
 
 **GDN-2 gate convergence and bounded decay.** Early NIAH retrieval lag of GDN-2 was shown to be under-converged gates, not an architecture defect: a three-stage evidence chain (under-trained → gate saturation → overtake at NIAH 0.240 vs GDN-1 0.200) established this. Replacing the unbounded decay parameterization with a bounded scaled-sigmoid (g_min = −5) accelerated gate convergence by 4× while preserving numerical range for 1M-context operation.
 
 **Metacognition.** Post-hoc probes read "knowing vs not-knowing" linearly at AUROC 0.945 (0.979 on the semantic-gap subset), exceeding the FLARE output-distribution baseline. Truth-anchor calibration — anchoring on factual truth rather than language-modeling confidence — first reached AUROC 0.769, and an expanded anchor set then raised it to 0.845 and 0.829 on two evaluation protocols (three seeds each), meeting the ≥0.8 target. A prediction-feedback loop was implemented, evaluated, and honestly reported as no-gain and rolled back. After calibration, the certainty direction is semantically correct (known text P(known) ≈ 1.000, fabricated text ≈ 0.13), and backbone validation loss is bit-identical before and after calibration (the probe-frozen red line holds).
 
+![KAL calibration](assets/en/chart_kal.png)
+
+*Fig. 3: KAL truth-calibration AUROC (3 seeds, mean±std; the feedback-loop arm showed no gain and was rolled back).*
+
 **Write-then-use knowledge blocks.** After training, the HRL indexer retrieves the correct block at top-1 = 1.000 (0.938 on the unified checkpoint). Injecting block KV into the HCA region answers injection-recall questions at 0.625, against an in-context upper bound of 0.70 and a pre-training baseline of 0.062 — with the backbone weights bit-identical (drift = 0.0).
+
+![Full-chain strengths](assets/en/chart_fullchain.png)
+
+*Fig. 4: Unified-checkpoint full-chain strengths (n=16; dashed red = respective baselines).*
 
 **Honest degradation.** On fully fabricated facts, the calibrated model declines to answer 16/16 times instead of confabulating.
 
@@ -58,7 +74,35 @@ Every subsystem above has been implemented in a self-built pure-PyTorch framewor
 
 **Dynamic vocabulary.** The Kaplan inner-lexicon extraction is live (strongest at layer 3 at 0.1B scale) and wired into the self-learning loop; semantic checks show real meaning (electron–photon cosine 0.513 vs electron–democracy 0.217).
 
-**Interactive full-chain validation (2026-07-31 supplement).** Beyond the offline suite, an interactive validation system (chat REPL + deterministic four-phase scenario) re-verified the complete "runtime correction + sleep consolidation" loop under a realistic dialog flow: fabricated facts → certainty 0.000 with Decline 6/6; teaching 6 facts → write rate 1.00, KV-injection recall 0.500 vs 0.000 baseline (n=6, same magnitude as the 0.625 at n=16); reasoning-trajectory certainty directionally correct; grid-code probe −0.052 (correctly negative — the unified checkpoint carries no path-integration training); sleep adjudication PROMOTE 3 / QUARANTINE 1 / REJECT 3. The validation also surfaced a structural finding: **the CA1 consolidation gate couples to source credibility with an edge effect** — tool-sourced (CallTool/doc) blocks scored consensus 0.68, just below the 0.7 threshold, and were systematically rejected, while user-sourced blocks (0.76) were promoted; only 3 of 6 taught facts could consolidate. Registered as a tuning item for the 1B re-test (a "re-verify then retry" band instead of outright rejection near the threshold). Panel: `runs/interactive_validation/validation_panel.png`.
+**Interactive full-chain validation (2026-07-31 supplement).** Beyond the offline suite, an interactive validation system (chat REPL + deterministic four-phase scenario) re-verified the complete "runtime correction + sleep consolidation" loop under a realistic dialog flow: fabricated facts → certainty 0.000 with Decline 6/6; teaching 6 facts → write rate 1.00, KV-injection recall 0.500 vs 0.000 baseline (n=6, same magnitude as the 0.625 at n=16); reasoning-trajectory certainty directionally correct; grid-code probe −0.052 (correctly negative — the unified checkpoint carries no path-integration training); sleep adjudication PROMOTE 3 / QUARANTINE 1 / REJECT 3. The validation also surfaced a structural finding: **the CA1 consolidation gate coupled to source credibility with an edge effect** — tool-sourced (CallTool/doc) blocks scored consensus 0.68, just below the 0.7 threshold, and were systematically rejected, while user-sourced blocks (0.76) were promoted; only 3 of 6 taught facts could consolidate.
+
+**Extended validation: manifold training, adaptive CA1, and the five-scenario suite (2026-07-31, second supplement).** Three systemic pieces of work followed, plus a five-scenario extended test (113 logged dialog turns; 14 of 15 criteria passed, one honest negative).
+
+*① Manifold reasoning needed training — and got it.* Evidence showed the unified checkpoint contains no manifold-projector weights (zero manifold keys among 266; weight statistics match random init exactly). Training the projector for 1500 steps with the backbone frozen (bit-identical before/after) raised semantic clustering contrast from 1.558 to **1.989** and isometry Pearson from 0.882 to **0.977** (Fig. 5). The clearest evidence: the four nearest knowledge blocks to a math prompt's reasoning trajectory are exactly the four math blocks. A manifold-reasoning preview (per-generation-step 3D trajectory with knowledge-block overlay and four-class bad-path detection) was also built.
+
+![Manifold projector training](assets/en/chart_manifold_training.png)
+
+*Fig. 5: Thought-manifold projector — untrained by accident, then trained (frozen backbone).*
+
+*② Adaptive CA1 gate (v1.0 → v1.1), fixing the edge effect above.* Three mechanisms: a RE_VERIFY margin band (blocks with consensus in [0.62, 0.7) get one cross-verified retry with a bounded bonus instead of outright rejection); evidence-aware consensus (0.85·base + 0.10·usage + 0.05·verify-rate); and online source-credibility learning (EMA updated by historical verification outcomes). Empirically (Fig. 6): doc-sourced blocks moved 0.688 → RE_VERIFY → 0.743 → **PROMOTE (6/6 consolidated, vs 3/6 in v1.0)**, while the conflict block remained QUARANTINE. Anti-gaming was verified three ways: poor blocks (<0.62) never enter the band; failing re-verification cannot whitewash; repeated failures push a source below the band (0.70→0.36), removing retry eligibility.
+
+![CA1 adaptive verdicts](assets/en/chart_ca1_adaptive.png)
+
+*Fig. 6: Sleep-consolidation verdicts before/after CA1 v1.1.*
+
+*③ Five-scenario suite.* S1: retrieval hits 0.67/1.00 on existing-knowledge chains (0.1B world knowledge is weak — recorded honestly). S2: multi-round teaching kept the recall curve non-decreasing, with re-taught entries coexisting as v1/v2/v3 (the accumulate-never-overwrite red line). **S3 (the key result):** the model cannot infer D by default (certainty 0.000), yet after teaching only the intermediate facts B' and C', injection recall answers D ('krypton'), and the reasoning trajectory's nearest distance to the taught blocks improves from 6.12 to 5.54 (Fig. 7). S5: all 19 doc-sourced blocks consolidated via RE_VERIFY (source credibility 0.70→0.95), and post-sleep recall is unchanged (consolidation does not harm runtime ability).
+
+![S3 bridge proximity](assets/en/chart_s3_bridge.png)
+
+*Fig. 7: S3 bridging — teaching only B'/C' enables answering D; the trajectory moves closer to the taught blocks.*
+
+**The carrier distribution boundary (the most important honest finding).** In S4 (dynamic vocabulary), the new word "Xylon" registered its concept slot correctly, with sensible semantic neighbors (metals mean cos 0.256 > unrelated 0.168, Fig. 8) and top-1 retrieval — **yet injection recall failed completely** (five phrasing variants all fell back to prior answers). Root cause: KV-injection recall works only inside the teaching-SFT distribution (engine-fact templates and the fuel-word answer domain); custom fact formats scored 0.25 at best. At 0.1B, "write-then-use" is an **in-distribution capability**, not a universal one.
+
+![S4 concept neighbors](assets/en/chart_s4_neighbors.png)
+
+*Fig. 8: S4 — the Kaplan-extracted concept lands near metals, but injection recall fails for OOV words.*
+
+**Solution analysis (cross-validated against the literature).** This boundary mirrors the known weakness of knowledge editing — edited facts generalize and compose poorly [27]. Three mutually reinforcing paths: ① **diversify the recall-training distribution** — evidence that few-shot fine-tuning generalizes better out-of-distribution than pure in-context learning, and that combining retrieval with fine-tuning is best [27]; the teaching-SFT templates and answer domains are already being diversified in the 1B data recipe; ② **retrieval robustness** — hard-negative training for the HRL indexer (STAR/ADORE-style curricula [28]) to stop out-of-distribution queries from being hijacked by distractor blocks; ③ **OOV concept graduation** — concept-slot vectors can steer but not recall facts (the theoretical boundary of position-invariant carriers), so output-side registration is required (better embedding initialization [29] plus short CPT of W_E/W_U only, per the design's three-level vocabulary ladder). All three are first-class observations for the 1B run, alongside KAL probe strength.
 
 ## Design Journey: Problems Found and How They Were Solved
 
@@ -76,7 +120,11 @@ Engineering honesty is a design principle of this project; several findings chan
 
 ## Current Stage: The 1B Transition
 
-The pilot phase is complete and the project has transitioned to a 1B-parameter model (1,017.7M parameters: d_model 1536, 32 layers = 8×{3 GDN-2 + 1 attention stack}), training on a 10B-token multi-domain corpus (web education 73%, mathematics 12%, synthetic textbooks 10%, Chinese web 5%) with a 1B-token quality-upweighted mid-training annealing phase, following the OLMo 3 Dolmino and SmolLM2 multi-stage recipes [20], [21]. The 10B-token budget is deliberately positioned as an architecture-validation run: it is half of the Chinchilla compute-optimal amount for 1B [22] and far below current 1B practice (4T+ tokens [21]), and all downstream evaluation will be reported with this caveat. The full toolchain — streaming data preparation with resume and vocabulary-bounds scanning, Muon training with the scheduler fix, checkpoint-resume hardening, tokenizer-bundled export, and HuggingFace upload — has passed a 437-test regression suite. Context extension to 256K tokens via YaRN-scaled RoPE and a progressive window curriculum is implemented at first version and scheduled after the 1B run [23].
+The pilot phase is complete and the project has transitioned to a 1B-parameter model (1,017.7M parameters: d_model 1536, 32 layers = 8×{3 GDN-2 + 1 attention stack}), training on a 10B-token multi-domain corpus (web education 73%, mathematics 12%, synthetic textbooks 10%, Chinese web 5%) with a 1B-token quality-upweighted mid-training annealing phase, following the OLMo 3 Dolmino and SmolLM2 multi-stage recipes [20], [21]. The 10B-token budget is deliberately positioned as an architecture-validation run: it is half of the Chinchilla compute-optimal amount for 1B [22] and far below current 1B practice (4T+ tokens [21]), and all downstream evaluation will be reported with this caveat. The full toolchain — streaming data preparation with resume and vocabulary-bounds scanning, Muon training with the scheduler fix, checkpoint-resume hardening, tokenizer-bundled export, and HuggingFace upload — has passed a 471-test regression suite. Context extension to 256K tokens via YaRN-scaled RoPE and a progressive window curriculum is implemented at first version and scheduled after the 1B run [23].
+
+![NIAH length scan](assets/en/chart_niah.png)
+
+*Fig. 9: NIAH length scan — the max_seq=1024 hard limit (RoPE cache) motivates the 256K extension project.*
 
 ## Impact and Future Development
 
@@ -135,3 +183,9 @@ A self-learning edge LLM changes what a small model can be. Instead of shipping 
 [25] "Meta-R1: Metacognitive reinforcement learning for large language models," arXiv:2508.17291, 2025.
 
 [26] "MemoryGraft: Temporally-decoupled indirect memory injection attacks on LLM agents," arXiv:2512.16962, 2025.
+
+[27] "WISE: Rethinking the knowledge memory for lifelong model editing of large language models," arXiv:2405.14768, 2024.
+
+[28] J. Zhan, J. Mao, Y. Liu, J. Guo, M. Zhang, and S. Ma, "Optimizing dense retrieval model training with hard negatives," in *Proc. SIGIR*, 2021, arXiv:2104.08051.
+
+[29] J. Hewitt, "Initializing new word embeddings for pretrained language models," Columbia University, 2021. [Online]. Available: https://www.cs.columbia.edu/~johnhew//vocab-expansion.html

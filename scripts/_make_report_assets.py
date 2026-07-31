@@ -385,6 +385,114 @@ def make_niah():
     print("written chart_niah.png")
 
 
+# =====================================================================
+# 7) CA1 自适应裁决对比（中文版）
+# =====================================================================
+def make_ca1_adaptive_zh():
+    import numpy as np
+    fig, ax = plt.subplots(figsize=(7.6, 4.2), dpi=150)
+    style_ax(ax)
+    cats = ["PROMOTE", "QUARANTINE", "REJECT"]
+    before = [3, 1, 3]
+    after = [6, 1, 0]
+    x = np.arange(3); w = 0.36
+    b1 = ax.bar(x - w / 2, before, w, color=FAINT, label="CA1 v1.0（静态）", zorder=3)
+    b2 = ax.bar(x + w / 2, after, w, color=GREEN, label="CA1 v1.1（自适应 RE_VERIFY）", zorder=3)
+    for bs in (b1, b2):
+        for b in bs:
+            ax.text(b.get_x() + b.get_width() / 2, b.get_height() + 0.08, str(int(b.get_height())),
+                    ha="center", fontsize=11, fontweight="bold", color=INK)
+    ax.set_xticks(x, cats)
+    ax.set_ylabel("块数（6 教学块 + 1 冲突块）", fontsize=10, color=SUB)
+    ax.set_ylim(0, 7.2)
+    ax.legend(frameon=False, loc="upper right", fontsize=9)
+    ax.set_title("睡眠固化裁决：信源边缘效应已根治；冲突块仍 QUARANTINE（防投毒红线）",
+                 fontsize=10.5, color=INK, loc="left")
+    fig.tight_layout()
+    fig.savefig(OUT / "chart_ca1_adaptive.png", facecolor="white")
+    plt.close(fig)
+    print("written chart_ca1_adaptive.png")
+
+
+# =====================================================================
+# 8) 流形投影器训练对照（中文版）
+# =====================================================================
+def make_manifold_training_zh():
+    import numpy as np
+    fig, ax = plt.subplots(figsize=(7.6, 4.2), dpi=150)
+    style_ax(ax)
+    metrics = ["聚簇对比度\n(越高越好)", "等距 Pearson\n(越高越好)"]
+    rand = [1.558, 0.882]
+    trained = [1.989, 0.977]
+    x = np.arange(2); w = 0.36
+    b1 = ax.bar(x - w / 2, rand, w, color=FAINT, label="随机初始化（未训练）", zorder=3)
+    b2 = ax.bar(x + w / 2, trained, w, color=PURPLE, label="已训练（1500 步，冻结主干）", zorder=3)
+    for bs in (b1, b2):
+        for b in bs:
+            ax.text(b.get_x() + b.get_width() / 2, b.get_height() + 0.02, f"{b.get_height():.3f}",
+                    ha="center", fontsize=10, fontweight="bold", color=INK)
+    ax.set_xticks(x, metrics)
+    ax.set_ylim(0, 2.5)
+    ax.legend(frameon=False, loc="upper right", fontsize=9)
+    ax.set_title("思考流形投影器：确认从未训练 → 训练使几何获得语义\n（数学 prompt 轨迹最近 4 块恰为全部数学块）",
+                 fontsize=10.5, color=INK, loc="left")
+    fig.tight_layout()
+    fig.savefig(OUT / "chart_manifold_training.png", facecolor="white")
+    plt.close(fig)
+    print("written chart_manifold_training.png")
+
+
+# =====================================================================
+# 9) S3 桥接邻近性（中文版）
+# =====================================================================
+def make_s3_bridge_zh():
+    import numpy as np
+    fig, ax = plt.subplots(figsize=(7.6, 4.2), dpi=150)
+    style_ax(ax)
+    names = ["B'（Zorblax→xenon）", "C'（xenon→krypton）"]
+    bfore = [8.628, 6.121]
+    after = [8.628, 5.535]
+    x = np.arange(2); w = 0.36
+    b1 = ax.bar(x - w / 2, bfore, w, color=FAINT, label="教学前", zorder=3)
+    b2 = ax.bar(x + w / 2, after, w, color=BLUE, label="补教 B'/C' 后", zorder=3)
+    for bs in (b1, b2):
+        for b in bs:
+            ax.text(b.get_x() + b.get_width() / 2, b.get_height() + 0.1, f"{b.get_height():.2f}",
+                    ha="center", fontsize=10, fontweight="bold", color=INK)
+    ax.set_xticks(x, names)
+    ax.set_ylabel("轨迹-块最小距离（越小越近）", fontsize=10, color=SUB)
+    ax.legend(frameon=False, fontsize=9)
+    ax.set_title("S3 桥接：只教中间知识 B'/C' 即注入答出 D（'krypton'）；\n推理轨迹向新教块靠近",
+                 fontsize=10.5, color=INK, loc="left")
+    fig.tight_layout()
+    fig.savefig(OUT / "chart_s3_bridge.png", facecolor="white")
+    plt.close(fig)
+    print("written chart_s3_bridge.png")
+
+
+# =====================================================================
+# 10) S4 概念槽语义邻居（中文版）
+# =====================================================================
+def make_s4_neighbors_zh():
+    sims = [("silver", 0.184, 1), ("metal", 0.309, 1), ("iron", 0.334, 1), ("copper", 0.196, 1),
+            ("democracy", 0.202, 0), ("banana", 0.261, 0), ("algebra", 0.111, 0), ("window", 0.098, 0)]
+    fig, ax = plt.subplots(figsize=(8.6, 4.2), dpi=150)
+    style_ax(ax)
+    names = [s[0] for s in sims]
+    vals = [s[1] for s in sims]
+    colors = [GREEN if s[2] else FAINT for s in sims]
+    bars = ax.bar(names, vals, color=colors, width=0.56, zorder=3)
+    for b, v in zip(bars, vals):
+        ax.text(b.get_x() + b.get_width() / 2, v + 0.006, f"{v:.3f}", ha="center", fontsize=9, color=INK)
+    ax.set_ylabel("与 'Xylon' 概念槽的 cos 相似度", fontsize=10, color=SUB)
+    ax.set_title("S4 动态词表：Kaplan 提取的概念落在金属邻近（相关 0.256 > 无关 0.168；绿=金属类）",
+                 fontsize=10.5, color=INK, loc="left")
+    fig.tight_layout()
+    fig.savefig(OUT / "chart_s4_neighbors.png", facecolor="white")
+    plt.close(fig)
+    print("written chart_s4_neighbors.png")
+
+
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     make_architecture()
@@ -393,4 +501,8 @@ if __name__ == "__main__":
     make_kal()
     make_fullchain()
     make_niah()
+    make_ca1_adaptive_zh()
+    make_manifold_training_zh()
+    make_s3_bridge_zh()
+    make_s4_neighbors_zh()
     print("ALL DONE")
