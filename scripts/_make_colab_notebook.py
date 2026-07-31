@@ -125,6 +125,19 @@ else:
     assert (REPO / "pyproject.toml").exists(), "zip 结构不正确：未找到 pyproject.toml"
     print("✅ Drive zip 解压完成")
 
+# 版本自检：关键文件缺失 = 克隆到的是旧 commit（或 zip 过旧）——git 模式自动 pull 修复；
+# zip 模式给出明确指引。防"旧克隆 + cell 跳过机制"静默用过期代码（真实踩坑记录）。
+required = ["scripts/prepare_data_1b.py", "configs/pilot_1b_gdn2.json", "scripts/export_final.py"]
+missing = [f for f in required if not (REPO / f).exists()]
+if missing and (REPO / ".git").exists():
+    print(f"检测到旧版本（缺 {missing}），执行 git pull --ff-only …")
+    subprocess.run(["git", "-C", str(REPO), "pull", "--ff-only"], check=True)
+    missing = [f for f in required if not (REPO / f).exists()]
+assert not missing, (
+    f"仓库版本过旧，仍缺 {missing}。git 模式请删除 /content/TAIS-Obisian 后重跑本 cell；"
+    "zip 模式请用最新代码重新打包上传。")
+print("✅ 版本自检通过（关键脚本/配置齐全）")
+
 os.chdir(REPO)
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", "."], check=True)
 sys.path.insert(0, str(REPO / "src"))
